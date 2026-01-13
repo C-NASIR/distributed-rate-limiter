@@ -22,6 +22,8 @@ func (t *HTTPTransport) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/admin/rules/list", t.handleRulesList)
 	mux.HandleFunc("/healthz", t.handleHealth)
 	mux.HandleFunc("/readyz", t.handleReady)
+	mux.HandleFunc("/metrics", t.handleMetrics)
+	mux.HandleFunc("/mode", t.handleMode)
 }
 
 func (t *HTTPTransport) handleCheck(w http.ResponseWriter, r *http.Request) {
@@ -208,6 +210,37 @@ func (t *HTTPTransport) handleReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
+}
+
+func (t *HTTPTransport) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if t.metrics == nil {
+		writeJSON(w, http.StatusOK, map[string]any{})
+		return
+	}
+	writeJSON(w, http.StatusOK, t.metrics.Snapshot())
+}
+
+func (t *HTTPTransport) handleMode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	mode := ModeNormal
+	if t.mode != nil {
+		mode = t.mode()
+	}
+	label := "normal"
+	switch mode {
+	case ModeDegraded:
+		label = "degraded"
+	case ModeEmergency:
+		label = "emergency"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"mode": label})
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {

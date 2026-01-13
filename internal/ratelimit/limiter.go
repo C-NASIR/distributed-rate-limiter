@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,6 +30,9 @@ type LimiterFactory struct {
 	redis    RedisClient
 	fallback *FallbackLimiter
 	mode     *DegradeController
+	breaker  *CircuitBreaker
+	mu       sync.Mutex
+	coalesceEnabled bool
 }
 
 // Create builds a limiter from a rule.
@@ -54,6 +58,15 @@ func (factory *LimiterFactory) Create(rule *Rule) (Limiter, RuleParams, error) {
 		Burst:   rule.BurstSize,
 		Version: rule.Version,
 	}
+	breaker := factory.breaker
+	if breaker == nil {
+		factory.mu.Lock()
+		if factory.breaker == nil {
+			factory.breaker = NewCircuitBreaker(CircuitOptions{})
+		}
+		breaker = factory.breaker
+		factory.mu.Unlock()
+	}
 	algo, err := normalizeAlgorithm(rule.Algorithm)
 	if err != nil {
 		return nil, RuleParams{}, err
@@ -63,6 +76,7 @@ func (factory *LimiterFactory) Create(rule *Rule) (Limiter, RuleParams, error) {
 		redis:    factory.redis,
 		fallback: factory.fallback,
 		mode:     factory.mode,
+		breaker:  breaker,
 		params:   params,
 	}, params, nil
 }
@@ -80,6 +94,7 @@ type redisLimiter struct {
 	redis    RedisClient
 	fallback *FallbackLimiter
 	mode     *DegradeController
+	breaker  *CircuitBreaker
 	params   RuleParams
 }
 
@@ -88,14 +103,20 @@ func (lim *redisLimiter) Allow(ctx context.Context, key []byte, cost int64) (*De
 		return nil, errors.New("limiter is nil")
 	}
 	if lim.mode != nil && lim.mode.Mode() == ModeEmergency {
-		return lim.fallback.Allow(ctx, key, lim.params, cost), nil
+		return lim.fallbackDecision(ctx, key, cost)
+	}
+	if lim.breaker != nil && !lim.breaker.Allow() {
+		return lim.fallbackDecision(ctx, key, cost)
 	}
 	decision, err := lim.exec(ctx, key, cost)
 	if err != nil {
-		if lim.fallback == nil {
-			return nil, err
+		if lim.breaker != nil {
+			lim.breaker.OnFailure()
 		}
-		return lim.fallback.Allow(ctx, key, lim.params, cost), nil
+		return lim.fallbackDecision(ctx, key, cost)
+	}
+	if lim.breaker != nil {
+		lim.breaker.OnSuccess()
 	}
 	return decision, nil
 }
@@ -105,6 +126,9 @@ func (lim *redisLimiter) AllowBatch(ctx context.Context, keys [][]byte, costs []
 		return nil, errors.New("limiter is nil")
 	}
 	if lim.mode != nil && lim.mode.Mode() == ModeEmergency {
+		return lim.fallbackDecisions(ctx, keys, costs)
+	}
+	if lim.breaker != nil && !lim.breaker.Allow() {
 		return lim.fallbackDecisions(ctx, keys, costs)
 	}
 	if lim.redis == nil {
@@ -120,7 +144,13 @@ func (lim *redisLimiter) AllowBatch(ctx context.Context, keys [][]byte, costs []
 	}
 	decisions, err := pipe.Exec(ctx)
 	if err != nil || len(decisions) != len(keys) {
+		if lim.breaker != nil {
+			lim.breaker.OnFailure()
+		}
 		return lim.fallbackDecisions(ctx, keys, costs)
+	}
+	if lim.breaker != nil {
+		lim.breaker.OnSuccess()
 	}
 	return decisions, nil
 }
@@ -173,7 +203,25 @@ func (lim *redisLimiter) fallbackDecisions(ctx context.Context, keys [][]byte, c
 		}
 		decisions[i] = lim.fallback.Allow(ctx, key, lim.params, cost)
 	}
-	return decisions, nil
+	return decisions, errUsedFallback{reason: "fallback"}
+}
+
+func (lim *redisLimiter) fallbackDecision(ctx context.Context, key []byte, cost int64) (*Decision, error) {
+	if lim.fallback == nil {
+		return nil, errors.New("fallback is nil")
+	}
+	return lim.fallback.Allow(ctx, key, lim.params, cost), errUsedFallback{reason: "fallback"}
+}
+
+type errUsedFallback struct {
+	reason string
+}
+
+func (e errUsedFallback) Error() string {
+	if e.reason == "" {
+		return "fallback"
+	}
+	return e.reason
 }
 
 func normalizeAlgorithm(algo string) (limiterAlgorithm, error) {

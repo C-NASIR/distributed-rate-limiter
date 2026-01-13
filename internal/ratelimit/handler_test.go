@@ -233,7 +233,7 @@ func TestRateLimitHandler_CheckLimitBatch_LimiterUnavailablePerGroup(t *testing.
 	pool := NewLimiterPool(rules, &LimiterFactory{}, LimiterPolicy{Shards: 1, MaxEntriesShard: 4})
 	keys := &KeyBuilder{bufPool: NewByteBufferPool(64)}
 	respPool := NewResponsePool()
-	handler := NewRateLimitHandler(rules, pool, keys, "region", respPool)
+	handler := NewRateLimitHandler(rules, pool, keys, "region", respPool, nil, nil, nil, nil)
 
 	reqs := []*CheckLimitRequest{
 		{TenantID: "tenant", Resource: "resource", UserID: "user-1", Cost: 1},
@@ -277,7 +277,7 @@ func TestRateLimitHandler_CheckLimit_EmergencyMode_UsesFallback(t *testing.T) {
 	pool := NewLimiterPool(rules, factory, LimiterPolicy{Shards: 1, MaxEntriesShard: 2})
 	keys := &KeyBuilder{bufPool: NewByteBufferPool(64)}
 	respPool := NewResponsePool()
-	handler := NewRateLimitHandler(rules, pool, keys, "region", respPool)
+	handler := NewRateLimitHandler(rules, pool, keys, "region", respPool, nil, nil, nil, nil)
 
 	redis.SetHealthy(false)
 	membership.SetHealthy(false)
@@ -313,5 +313,5 @@ func newTestHandler(rules *RuleCache) *RateLimitHandler {
 	pool := NewLimiterPool(rules, factory, LimiterPolicy{Shards: 1, MaxEntriesShard: 4})
 	keys := &KeyBuilder{bufPool: NewByteBufferPool(64)}
 	respPool := NewResponsePool()
-	return NewRateLimitHandler(rules, pool, keys, "region", respPool)
+	return NewRateLimitHandler(rules, pool, keys, "region", respPool, nil, nil, nil, nil)
 }

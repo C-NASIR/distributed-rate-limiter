@@ -14,6 +14,11 @@ type Config struct {
 	Channel           string
 	HTTPListenAddr    string
 	EnableHTTP        bool
+	TraceSampleRate   int
+	CoalesceEnabled   bool
+	CoalesceTTL       time.Duration
+	CoalesceShards    int
+	BreakerOptions    CircuitOptions
 	CacheSyncInterval time.Duration
 	HealthInterval    time.Duration
 	LimiterPolicy     LimiterPolicy

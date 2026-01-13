@@ -1,7 +1,10 @@
 // Package ratelimit defines admin interfaces and event models.
 package ratelimit
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // RuleDB stores rate limit rules.
 type RuleDB interface {
@@ -31,11 +34,28 @@ type PubSub interface {
 	Publish(ctx context.Context, channel string, payload []byte) error
 }
 
+// Span captures tracing span operations.
+type Span interface {
+	SetAttribute(key, value string)
+	RecordError(err error)
+	End()
+}
+
 // Tracer is an optional tracing dependency.
-type Tracer interface{}
+type Tracer interface {
+	StartSpan(ctx context.Context, name string) (context.Context, Span)
+}
 
-// Sampler is an optional tracing sampler.
-type Sampler interface{}
+// Sampler decides if a trace should be sampled.
+type Sampler interface {
+	Sampled(traceID string) bool
+}
 
-// Metrics is an optional metrics dependency.
-type Metrics interface{}
+// Metrics records service measurements.
+type Metrics interface {
+	IncCheck(result string, algorithm string, region string)
+	ObserveLatency(op string, d time.Duration, region string)
+	IncFallback(reason string, region string)
+	IncRedisError(op string, region string)
+	IncBatchItemError(code string, region string)
+}

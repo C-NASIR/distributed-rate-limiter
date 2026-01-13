@@ -4,6 +4,8 @@ package ratelimit
 import (
 	"context"
 	"errors"
+	"strconv"
+	"time"
 )
 
 // RateLimitHandler handles rate limit requests.
@@ -14,17 +16,37 @@ type RateLimitHandler struct {
 	region   string
 	respPool *ResponsePool
 	batch    *BatchPlanner
+	tracer   Tracer
+	sampler  Sampler
+	metrics  Metrics
+	coalescer *Coalescer
 }
 
 // NewRateLimitHandler constructs a RateLimitHandler.
-func NewRateLimitHandler(rules *RuleCache, pool *LimiterPool, keys *KeyBuilder, region string, rp *ResponsePool) *RateLimitHandler {
+func NewRateLimitHandler(rules *RuleCache, pool *LimiterPool, keys *KeyBuilder, region string, rp *ResponsePool, tracer Tracer, sampler Sampler, metrics Metrics, coalescer *Coalescer) *RateLimitHandler {
+	if tracer == nil {
+		tracer = NoopTracer{}
+	}
+	if sampler == nil {
+		sampler = HashSampler{rate: 100}
+	}
+	if metrics == nil {
+		metrics = NewInMemoryMetrics()
+	}
+	if coalescer == nil {
+		coalescer = NewCoalescer(0, 0)
+	}
 	return &RateLimitHandler{
-		rules:    rules,
-		pool:     pool,
-		keys:     keys,
-		region:   region,
-		respPool: rp,
-		batch:    newBatchPlanner(),
+		rules:     rules,
+		pool:      pool,
+		keys:      keys,
+		region:    region,
+		respPool:  rp,
+		batch:     newBatchPlanner(),
+		tracer:    tracer,
+		sampler:   sampler,
+		metrics:   metrics,
+		coalescer: coalescer,
 	}
 }
 
@@ -48,10 +70,32 @@ func (h *RateLimitHandler) CheckLimit(ctx context.Context, req *CheckLimitReques
 	if h == nil || h.rules == nil || h.pool == nil || h.keys == nil || h.respPool == nil {
 		return nil, errors.New("handler is not initialized")
 	}
-	if _, ok := h.rules.Get(req.TenantID, req.Resource); !ok {
+	start := time.Now()
+	span := Span(nil)
+	if h.sampler != nil && h.sampler.Sampled(req.TraceID) {
+		ctx, span = h.tracer.StartSpan(ctx, "check")
+		span.SetAttribute("tenant_id", req.TenantID)
+		span.SetAttribute("resource", req.Resource)
+		span.SetAttribute("region", h.region)
+	}
+	defer func() {
+		if span != nil {
+			span.End()
+		}
+		if h.metrics != nil {
+			h.metrics.ObserveLatency("check", time.Since(start), h.region)
+		}
+	}()
+	rule, ok := h.rules.Get(req.TenantID, req.Resource)
+	algorithm := ""
+	if ok && rule != nil {
+		algorithm = rule.Algorithm
+	}
+	if !ok {
 		resp := h.respPool.Get()
 		resp.Allowed = false
 		resp.ErrorCode = "RULE_NOT_FOUND"
+		h.recordCheckMetrics(resp, algorithm, false)
 		return resp, nil
 	}
 	handle, _, err := h.pool.Acquire(ctx, req.TenantID, req.Resource)
@@ -59,18 +103,33 @@ func (h *RateLimitHandler) CheckLimit(ctx context.Context, req *CheckLimitReques
 		resp := h.respPool.Get()
 		resp.Allowed = false
 		resp.ErrorCode = "LIMITER_UNAVAILABLE"
+		h.recordCheckMetrics(resp, algorithm, false)
 		return resp, nil
 	}
 	defer handle.Release()
 
 	key := h.keys.BuildKey(req.TenantID, req.UserID, req.Resource)
 	defer h.keys.ReleaseKey(key)
-
-	decision, err := handle.Limiter().Allow(ctx, key, req.Cost)
+	coalesceKey := h.keys.KeyToString(key) + "\x1f" + strconv.FormatInt(req.Cost, 10)
+	decision, err := h.coalescer.Do(ctx, coalesceKey, func() (*Decision, error) {
+		return handle.Limiter().Allow(ctx, key, req.Cost)
+	})
+	usedFallback := false
+	if err != nil {
+		var fallback errUsedFallback
+		if errors.As(err, &fallback) {
+			usedFallback = true
+			err = nil
+		}
+	}
 	if err != nil || decision == nil {
 		resp := h.respPool.Get()
 		resp.Allowed = false
 		resp.ErrorCode = "LIMITER_ERROR"
+		if span != nil {
+			span.RecordError(err)
+		}
+		h.recordCheckMetrics(resp, algorithm, usedFallback)
 		return resp, nil
 	}
 
@@ -81,6 +140,7 @@ func (h *RateLimitHandler) CheckLimit(ctx context.Context, req *CheckLimitReques
 	resp.ResetAfter = decision.ResetAfter
 	resp.RetryAfter = decision.RetryAfter
 	resp.ErrorCode = ""
+	h.recordCheckMetrics(resp, algorithm, usedFallback)
 	return resp, nil
 }
 
@@ -92,6 +152,12 @@ func (h *RateLimitHandler) CheckLimitBatch(ctx context.Context, reqs []*CheckLim
 	if h == nil || h.rules == nil || h.pool == nil || h.keys == nil || h.respPool == nil {
 		return nil, errors.New("handler is not initialized")
 	}
+	start := time.Now()
+	defer func() {
+		if h.metrics != nil {
+			h.metrics.ObserveLatency("checkBatch", time.Since(start), h.region)
+		}
+	}()
 
 	responses := make([]*CheckLimitResponse, len(reqs))
 	validReqs := make([]*CheckLimitRequest, len(reqs))
@@ -124,21 +190,45 @@ func (h *RateLimitHandler) CheckLimitBatch(ctx context.Context, reqs []*CheckLim
 	plan := planner.Plan(validReqs)
 	defer planner.Release(plan)
 
+	sampled := false
+	if h.sampler != nil {
+		for _, req := range reqs {
+			if req != nil && h.sampler.Sampled(req.TraceID) {
+				sampled = true
+				break
+			}
+		}
+	}
+
 	for _, group := range plan.Groups {
+		span := Span(nil)
+		groupCtx := ctx
+		if sampled {
+			groupCtx, span = h.tracer.StartSpan(groupCtx, "checkBatchGroup")
+			span.SetAttribute("tenant_id", group.TenantID)
+			span.SetAttribute("resource", group.Resource)
+			span.SetAttribute("region", h.region)
+		}
 		if _, ok := h.rules.Get(group.TenantID, group.Resource); !ok {
 			for _, idx := range group.Indexes {
 				resp := responses[idx]
 				resp.Allowed = false
 				resp.ErrorCode = "RULE_NOT_FOUND"
 			}
+			if span != nil {
+				span.End()
+			}
 			continue
 		}
-		handle, _, err := h.pool.Acquire(ctx, group.TenantID, group.Resource)
+		handle, _, err := h.pool.Acquire(groupCtx, group.TenantID, group.Resource)
 		if err != nil {
 			for _, idx := range group.Indexes {
 				resp := responses[idx]
 				resp.Allowed = false
 				resp.ErrorCode = "LIMITER_UNAVAILABLE"
+			}
+			if span != nil {
+				span.End()
 			}
 			continue
 		}
@@ -151,7 +241,15 @@ func (h *RateLimitHandler) CheckLimitBatch(ctx context.Context, reqs []*CheckLim
 			group.Keys[i] = h.keys.BuildKey(req.TenantID, req.UserID, req.Resource)
 		}
 
-		decisions, err := limiter.AllowBatch(ctx, group.Keys, group.Costs)
+		decisions, err := limiter.AllowBatch(groupCtx, group.Keys, group.Costs)
+		usedFallback := false
+		if err != nil {
+			var fallback errUsedFallback
+			if errors.As(err, &fallback) {
+				usedFallback = true
+				err = nil
+			}
+		}
 		if err != nil || len(decisions) != len(group.Indexes) {
 			for _, idx := range group.Indexes {
 				resp := responses[idx]
@@ -173,6 +271,9 @@ func (h *RateLimitHandler) CheckLimitBatch(ctx context.Context, reqs []*CheckLim
 				resp.ResetAfter = decision.ResetAfter
 				resp.RetryAfter = decision.RetryAfter
 				resp.ErrorCode = ""
+				if usedFallback && h.metrics != nil {
+					h.metrics.IncFallback("fallback", h.region)
+				}
 			}
 		}
 
@@ -182,6 +283,13 @@ func (h *RateLimitHandler) CheckLimitBatch(ctx context.Context, reqs []*CheckLim
 			}
 		}
 		handle.Release()
+		if span != nil {
+			span.End()
+		}
+	}
+
+	for _, resp := range responses {
+		h.recordBatchItemError(resp)
 	}
 
 	return responses, nil
@@ -201,4 +309,32 @@ func newBatchPlanner() *BatchPlanner {
 		keyPool:   NewKeyPool(),
 		costPool:  NewCostPool(),
 	}
+}
+
+func (h *RateLimitHandler) recordCheckMetrics(resp *CheckLimitResponse, algorithm string, usedFallback bool) {
+	if h.metrics == nil || resp == nil {
+		return
+	}
+	result := resp.ErrorCode
+	if result == "" {
+		if resp.Allowed {
+			result = "allowed"
+		} else {
+			result = "denied"
+		}
+	}
+	h.metrics.IncCheck(result, algorithm, h.region)
+	if resp.ErrorCode == "LIMITER_ERROR" || resp.ErrorCode == "LIMITER_UNAVAILABLE" {
+		h.metrics.IncRedisError("allow", h.region)
+	}
+	if usedFallback {
+		h.metrics.IncFallback("fallback", h.region)
+	}
+}
+
+func (h *RateLimitHandler) recordBatchItemError(resp *CheckLimitResponse) {
+	if h.metrics == nil || resp == nil || resp.ErrorCode == "" {
+		return
+	}
+	h.metrics.IncBatchItemError(resp.ErrorCode, h.region)
 }

@@ -238,6 +238,8 @@ func newHTTPTestServer(t *testing.T, app *Application) *httptest.Server {
 	if err := transport.ServeAdmin(app.AdminHandler); err != nil {
 		t.Fatalf("failed to register admin service: %v", err)
 	}
+	transport.metrics = app.metrics
+	transport.mode = app.Mode
 	handler, err := transport.Handler()
 	if err != nil {
 		t.Fatalf("failed to build handler: %v", err)

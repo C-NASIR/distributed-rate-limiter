@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Application holds core components for the service.
@@ -26,6 +27,9 @@ type Application struct {
 	ready            atomic.Bool
 	httpTransport    *HTTPTransport
 	transports       []Transport
+	metrics          *InMemoryMetrics
+	tracer           Tracer
+	sampler          Sampler
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
 }
@@ -50,6 +54,18 @@ func NewApplication(cfg *Config) (*Application, error) {
 	if cfg.Channel == "" {
 		cfg.Channel = "ratelimit_invalidation"
 	}
+	if cfg.TraceSampleRate == 0 {
+		cfg.TraceSampleRate = 100
+	}
+	if !cfg.CoalesceEnabled {
+		cfg.CoalesceEnabled = true
+	}
+	if cfg.CoalesceTTL == 0 {
+		cfg.CoalesceTTL = 10 * time.Millisecond
+	}
+	if cfg.CoalesceShards == 0 {
+		cfg.CoalesceShards = 64
+	}
 	redis := cfg.Redis
 	if redis == nil {
 		redis = NewInMemoryRedis(nil)
@@ -67,7 +83,8 @@ func NewApplication(cfg *Config) (*Application, error) {
 		mode:      degrade,
 		local:     &LocalLimiterStore{},
 	}
-	factory := &LimiterFactory{redis: redis, fallback: fallback, mode: degrade}
+	breaker := NewCircuitBreaker(cfg.BreakerOptions)
+	factory := &LimiterFactory{redis: redis, fallback: fallback, mode: degrade, breaker: breaker}
 	pool := NewLimiterPool(rules, factory, cfg.LimiterPolicy)
 	keys := &KeyBuilder{bufPool: NewByteBufferPool(4096)}
 	respPool := NewResponsePool()
@@ -76,7 +93,15 @@ func NewApplication(cfg *Config) (*Application, error) {
 		keyPool:   NewKeyPool(),
 		costPool:  NewCostPool(),
 	}
-	rate := NewRateLimitHandler(rules, pool, keys, cfg.Region, respPool)
+	metrics := NewInMemoryMetrics()
+	tracer := Tracer(NoopTracer{})
+	sampler := Sampler(HashSampler{rate: cfg.TraceSampleRate})
+	var coalescer *Coalescer
+	if cfg.CoalesceEnabled {
+		coalescer = NewCoalescer(cfg.CoalesceShards, cfg.CoalesceTTL)
+	}
+
+	rate := NewRateLimitHandler(rules, pool, keys, cfg.Region, respPool, tracer, sampler, metrics, coalescer)
 	rate.batch = bp
 
 	var outboxWriter OutboxWriter
@@ -104,6 +129,9 @@ func NewApplication(cfg *Config) (*Application, error) {
 		CacheInvalidator: invalid,
 		CacheSyncWorker:  syncer,
 		HealthLoop:       health,
+		metrics:          metrics,
+		tracer:           tracer,
+		sampler:          sampler,
 	}
 
 	if cfg.EnableHTTP {
@@ -114,6 +142,8 @@ func NewApplication(cfg *Config) (*Application, error) {
 		if err := transport.ServeAdmin(app.AdminHandler); err != nil {
 			return nil, err
 		}
+		transport.metrics = app.metrics
+		transport.mode = app.Mode
 		app.httpTransport = transport
 		app.transports = append(app.transports, transport)
 	}
@@ -220,4 +250,12 @@ func (app *Application) Ready() bool {
 		return false
 	}
 	return app.ready.Load()
+}
+
+// Mode returns the current operating mode.
+func (app *Application) Mode() OperatingMode {
+	if app == nil || app.DegradeControl == nil {
+		return ModeNormal
+	}
+	return app.DegradeControl.Mode()
 }

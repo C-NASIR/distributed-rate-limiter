@@ -16,6 +16,8 @@ type HTTPTransport struct {
 	rate     RateLimitService
 	admin    AdminService
 	appReady func() bool
+	metrics  *InMemoryMetrics
+	mode     func() OperatingMode
 	mux      http.Handler
 	mu       sync.Mutex
 }
