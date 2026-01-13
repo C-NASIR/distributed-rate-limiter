@@ -1,0 +1,2 @@
+- only write to files
+- do not write to output on the terminal unless explicitly asked
