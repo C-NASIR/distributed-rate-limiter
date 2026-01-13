@@ -12,13 +12,16 @@ func TestRateLimitHandler_CoalescesHotKey(t *testing.T) {
 	t.Parallel()
 
 	redis := &countingRedis{}
-	membership := NewStaticMembership("self", []string{"self"})
-	degrade := NewDegradeController(redis, membership, DegradeThresholds{})
+	membership := NewSingleInstanceMembership("self", "region")
+	degrade := NewDegradeController(redis, membership, DegradeThresholds{}, "region", false, 0)
 	fallback := &FallbackLimiter{
-		ownership: &RendezvousOwnership{m: membership},
-		policy:    normalizeFallbackPolicy(FallbackPolicy{}),
-		mode:      degrade,
-		local:     &LocalLimiterStore{},
+		ownership:   NewRendezvousOwnership(membership, "region", false, true),
+		mship:       membership,
+		region:      "region",
+		regionGroup: "region",
+		policy:      normalizeFallbackPolicy(FallbackPolicy{}),
+		mode:        degrade,
+		local:       &LocalLimiterStore{},
 	}
 	factory := &LimiterFactory{redis: redis, fallback: fallback, mode: degrade, breaker: NewCircuitBreaker(CircuitOptions{})}
 	rules := NewRuleCache()
@@ -83,10 +86,10 @@ func (r *countingRedis) ExecSlidingWindow(ctx context.Context, key string, param
 }
 
 type countingPipeline struct {
-	redis *countingRedis
-	keys  []string
+	redis  *countingRedis
+	keys   []string
 	params []RuleParams
-	costs []int64
+	costs  []int64
 }
 
 func (p *countingPipeline) ExecTokenBucket(key string, params RuleParams, cost int64) {

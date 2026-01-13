@@ -27,4 +27,9 @@ func TestConfigValidation(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for negative timeout")
 	}
+
+	_, err = NewApplication(&Config{Region: "test", DegradeRequireRegionQuorum: true, RegionQuorumFraction: 1.5})
+	if err == nil {
+		t.Fatalf("expected error for invalid region quorum fraction")
+	}
 }

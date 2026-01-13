@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 const defaultMaxBodyBytes = 1 << 20
@@ -30,6 +31,12 @@ func (t *HTTPTransport) handleCheck(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	start := time.Now()
+	defer func() {
+		if t.metrics != nil {
+			t.metrics.ObserveLatency("httpCheck", time.Since(start), regionLabel(t.region))
+		}
+	}()
 	var httpReq httpCheckRequest
 	if err := t.decodeJSON(w, r, &httpReq); err != nil {
 		t.writeError(w, r, http.StatusBadRequest, err)
@@ -57,6 +64,12 @@ func (t *HTTPTransport) handleCheckBatch(w http.ResponseWriter, r *http.Request)
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	start := time.Now()
+	defer func() {
+		if t.metrics != nil {
+			t.metrics.ObserveLatency("httpCheckBatch", time.Since(start), regionLabel(t.region))
+		}
+	}()
 	var httpReqs []httpCheckRequest
 	if err := t.decodeJSON(w, r, &httpReqs); err != nil {
 		t.writeError(w, r, http.StatusBadRequest, err)

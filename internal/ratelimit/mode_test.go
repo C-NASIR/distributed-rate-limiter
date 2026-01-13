@@ -10,12 +10,12 @@ func TestDegradeController_ModeTransitions(t *testing.T) {
 	t.Parallel()
 
 	redis := NewInMemoryRedis(nil)
-	membership := NewStaticMembership("self", []string{"self"})
+	membership := NewSingleInstanceMembership("self", "region")
 	thresholds := DegradeThresholds{
 		RedisUnhealthyFor:   20 * time.Millisecond,
 		MembershipUnhealthy: 40 * time.Millisecond,
 	}
-	controller := NewDegradeController(redis, membership, thresholds)
+	controller := NewDegradeController(redis, membership, thresholds, "region", false, 0)
 	controller.Update(context.Background())
 	if controller.Mode() != ModeNormal {
 		t.Fatalf("expected normal mode")

@@ -10,8 +10,12 @@ import (
 func TestRendezvousOwnership_StableOwner(t *testing.T) {
 	t.Parallel()
 
-	membership := NewStaticMembership("node-a", []string{"node-a", "node-b", "node-c"})
-	owner := &RendezvousOwnership{m: membership}
+	membership := NewStaticMembership("node-a", "region-a", []InstanceInfo{
+		{ID: "node-a", Region: "region-a", Weight: 1},
+		{ID: "node-b", Region: "region-a", Weight: 1},
+		{ID: "node-c", Region: "region-a", Weight: 1},
+	})
+	owner := NewRendezvousOwnership(membership, "region-a", false, true)
 	key := []byte("stable-key")
 
 	first := owner.IsOwner(context.Background(), key)
@@ -25,8 +29,11 @@ func TestRendezvousOwnership_StableOwner(t *testing.T) {
 func TestFallbackLimiter_DenyWhenNotOwner(t *testing.T) {
 	t.Parallel()
 
-	membership := NewStaticMembership("node-a", []string{"node-a", "node-b"})
-	owner := &RendezvousOwnership{m: membership}
+	membership := NewStaticMembership("node-a", "region-a", []InstanceInfo{
+		{ID: "node-a", Region: "region-a", Weight: 1},
+		{ID: "node-b", Region: "region-a", Weight: 1},
+	})
+	owner := NewRendezvousOwnership(membership, "region-a", false, true)
 	var key []byte
 	for i := 0; i < 100; i++ {
 		candidate := []byte(fmt.Sprintf("key-%d", i))
@@ -40,9 +47,12 @@ func TestFallbackLimiter_DenyWhenNotOwner(t *testing.T) {
 	}
 
 	redis := NewInMemoryRedis(nil)
-	controller := NewDegradeController(redis, membership, DegradeThresholds{})
+	controller := NewDegradeController(redis, membership, DegradeThresholds{}, "region-a", false, 0)
 	fallback := &FallbackLimiter{
-		ownership: owner,
+		ownership:   owner,
+		mship:       membership,
+		region:      "region-a",
+		regionGroup: "region-a",
 		policy: FallbackPolicy{
 			LocalCapPerWindow:      5,
 			DenyWhenNotOwner:       true,
@@ -64,18 +74,21 @@ func TestLimiterFactory_UsesFallbackOnRedisUnhealthy(t *testing.T) {
 
 	redis := NewInMemoryRedis(nil)
 	redis.SetHealthy(false)
-	membership := NewStaticMembership("self", []string{"self"})
+	membership := NewSingleInstanceMembership("self", "region")
 	thresholds := DegradeThresholds{RedisUnhealthyFor: 10 * time.Millisecond}
-	controller := NewDegradeController(redis, membership, thresholds)
+	controller := NewDegradeController(redis, membership, thresholds, "region", false, 0)
 	time.Sleep(15 * time.Millisecond)
 	controller.Update(context.Background())
 
 	policy := normalizeFallbackPolicy(FallbackPolicy{})
 	fallback := &FallbackLimiter{
-		ownership: &RendezvousOwnership{m: membership},
-		policy:    policy,
-		mode:      controller,
-		local:     &LocalLimiterStore{},
+		ownership:   NewRendezvousOwnership(membership, "region", false, true),
+		mship:       membership,
+		region:      "region",
+		regionGroup: "region",
+		policy:      policy,
+		mode:        controller,
+		local:       &LocalLimiterStore{},
 	}
 	factory := &LimiterFactory{redis: redis, fallback: fallback, mode: controller}
 

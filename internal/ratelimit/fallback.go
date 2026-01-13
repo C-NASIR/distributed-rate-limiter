@@ -70,10 +70,48 @@ func (store *LocalLimiterStore) AllowFixedWindow(key string, cap int64, window t
 
 // FallbackLimiter applies local fallback limiting.
 type FallbackLimiter struct {
-	ownership Ownership
-	policy    FallbackPolicy
-	mode      *DegradeController
-	local     *LocalLimiterStore
+	ownership   Ownership
+	mship       Membership
+	region      string
+	regionGroup string
+	policy      FallbackPolicy
+	mode        *DegradeController
+	local       *LocalLimiterStore
+}
+
+func (fl *FallbackLimiter) effectiveShardFactor(ctx context.Context) int64 {
+	if fl == nil || fl.mship == nil {
+		return 1
+	}
+	instances, err := fl.mship.Instances(ctx)
+	if err != nil {
+		return 1
+	}
+	group := fl.regionGroup
+	if group == "" {
+		group = fl.region
+	}
+	if group == "" {
+		return 1
+	}
+	count := 0
+	seenSelf := false
+	selfID := fl.mship.SelfID()
+	for _, instance := range instances {
+		if instance.ID == selfID {
+			seenSelf = true
+		}
+		if instance.Region == group {
+			count++
+		}
+	}
+	if !seenSelf && fl.mship.SelfRegion() == group {
+		count++
+	}
+	if count <= 0 {
+		return 1
+	}
+	return int64(count)
 }
 
 // Allow applies fallback limiting.
@@ -87,10 +125,20 @@ func (fl *FallbackLimiter) Allow(ctx context.Context, key []byte, params RulePar
 		mode = fl.mode.Mode()
 	}
 
-	cap := policy.LocalCapPerWindow
+	factor := fl.effectiveShardFactor(ctx)
+	if factor < 1 {
+		factor = 1
+	}
+	cap := policy.LocalCapPerWindow / factor
+	if cap < 1 {
+		cap = 1
+	}
 	if mode == ModeEmergency {
 		if policy.EmergencyAllowSmallCap {
-			cap = policy.EmergencyCapPerWindow
+			cap = policy.EmergencyCapPerWindow / factor
+			if cap < 1 {
+				cap = 1
+			}
 		} else {
 			return &Decision{Allowed: false, Limit: 0}
 		}

@@ -60,7 +60,7 @@ func grpcAuthInterceptor(enableAuth bool, adminToken string) grpc.UnaryServerInt
 	}
 }
 
-func grpcTracingMetricsInterceptor(tracer Tracer, sampler Sampler, metrics Metrics) grpc.UnaryServerInterceptor {
+func grpcTracingMetricsInterceptor(tracer Tracer, sampler Sampler, metrics Metrics, region string) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		method := grpcMethodName(info.FullMethod)
 		traceID := grpcTraceID(req)
@@ -78,11 +78,18 @@ func grpcTracingMetricsInterceptor(tracer Tracer, sampler Sampler, metrics Metri
 			span.End()
 		}
 		if metrics != nil {
-			metrics.ObserveLatency(method, time.Since(start), "")
+			metrics.ObserveLatency(method, time.Since(start), regionLabel(region))
 		}
 		recordGRPCResult(metrics, method, err)
 		return resp, err
 	}
+}
+
+func regionLabel(region string) string {
+	if region == "" {
+		return "unknown"
+	}
+	return region
 }
 
 func grpcMethodName(fullMethod string) string {

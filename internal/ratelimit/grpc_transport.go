@@ -36,6 +36,7 @@ type grpcTransportConfig struct {
 	tracer     Tracer
 	sampler    Sampler
 	metrics    Metrics
+	region     string
 	logger     Logger
 }
 
@@ -103,7 +104,7 @@ func (t *GRPCTransport) Start() error {
 			grpc.ChainUnaryInterceptor(
 				grpcRequestIDInterceptor(t.cfg.logger),
 				grpcAuthInterceptor(t.cfg.enableAuth, t.cfg.adminToken),
-				grpcTracingMetricsInterceptor(t.cfg.tracer, t.cfg.sampler, t.cfg.metrics),
+				grpcTracingMetricsInterceptor(t.cfg.tracer, t.cfg.sampler, t.cfg.metrics, t.cfg.region),
 			),
 			grpc.KeepaliveParams(keepalive.ServerParameters{Time: t.cfg.keepAlive}),
 		}

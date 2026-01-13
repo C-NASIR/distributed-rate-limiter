@@ -47,6 +47,11 @@ func NewApplication(cfg *Config) (*Application, error) {
 	if cfg.Region == "" {
 		return nil, errors.New("region is required")
 	}
+	if cfg.DegradeRequireRegionQuorum {
+		if cfg.RegionQuorumFraction <= 0 || cfg.RegionQuorumFraction > 1 {
+			return nil, errors.New("region quorum fraction must be between 0 and 1")
+		}
+	}
 	if cfg.EnableHTTP && cfg.HTTPListenAddr == "" {
 		return nil, errors.New("http listen address is required")
 	}
@@ -117,6 +122,9 @@ func NewApplication(cfg *Config) (*Application, error) {
 	if cfg.TraceSampleRate == 0 {
 		cfg.TraceSampleRate = 100
 	}
+	if !cfg.GlobalOwnershipFallback {
+		cfg.GlobalOwnershipFallback = true
+	}
 	if !cfg.CoalesceEnabled {
 		cfg.CoalesceEnabled = true
 	}
@@ -126,23 +134,38 @@ func NewApplication(cfg *Config) (*Application, error) {
 	if cfg.CoalesceShards == 0 {
 		cfg.CoalesceShards = 64
 	}
+	if cfg.RegionGroup == "" {
+		cfg.RegionGroup = cfg.Region
+	}
+	if cfg.RegionInstanceWeight == 0 {
+		cfg.RegionInstanceWeight = 1
+	}
+	if cfg.RegionQuorumFraction == 0 {
+		cfg.RegionQuorumFraction = 0.5
+	}
 	redis := cfg.Redis
 	if redis == nil {
 		redis = NewInMemoryRedis(nil)
 	}
 	membership := cfg.Membership
 	if membership == nil {
-		membership = NewStaticMembership("local", []string{"local"})
+		membership = NewSingleInstanceMembership("local", cfg.Region)
+	}
+	if static, ok := membership.(*StaticMembership); ok {
+		static.SetSelfWeight(cfg.RegionInstanceWeight)
 	}
 	rules := NewRuleCache()
-	degrade := NewDegradeController(redis, membership, cfg.DegradeThresh)
+	degrade := NewDegradeController(redis, membership, cfg.DegradeThresh, cfg.Region, cfg.DegradeRequireRegionQuorum, cfg.RegionQuorumFraction)
 	degrade.SetLogger(cfg.Logger)
-	ownership := &RendezvousOwnership{m: membership}
+	ownership := NewRendezvousOwnership(membership, cfg.Region, cfg.EnableGlobalOwnership, cfg.GlobalOwnershipFallback)
 	fallback := &FallbackLimiter{
-		ownership: ownership,
-		policy:    normalizeFallbackPolicy(cfg.FallbackPolicy),
-		mode:      degrade,
-		local:     &LocalLimiterStore{},
+		ownership:   ownership,
+		mship:       membership,
+		region:      cfg.Region,
+		regionGroup: cfg.RegionGroup,
+		policy:      normalizeFallbackPolicy(cfg.FallbackPolicy),
+		mode:        degrade,
+		local:       &LocalLimiterStore{},
 	}
 	breaker := NewCircuitBreaker(cfg.BreakerOptions)
 	factory := &LimiterFactory{redis: redis, fallback: fallback, mode: degrade, breaker: breaker}
@@ -217,6 +240,7 @@ func NewApplication(cfg *Config) (*Application, error) {
 		transport.adminToken = cfg.AdminToken
 		transport.logger = cfg.Logger
 		transport.metrics = app.metrics
+		transport.region = cfg.Region
 		transport.mode = app.Mode
 		app.httpTransport = transport
 		app.transports = append(app.transports, transport)
@@ -230,6 +254,7 @@ func NewApplication(cfg *Config) (*Application, error) {
 			tracer:     app.tracer,
 			sampler:    app.sampler,
 			metrics:    app.metrics,
+			region:     cfg.Region,
 			logger:     cfg.Logger,
 		})
 		if err := transport.ServeRateLimit(app.RateLimitHandler); err != nil {

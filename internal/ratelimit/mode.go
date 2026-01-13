@@ -3,6 +3,7 @@ package ratelimit
 
 import (
 	"context"
+	"math"
 	"sync/atomic"
 	"time"
 )
@@ -19,8 +20,16 @@ const (
 // Membership provides instance membership information.
 type Membership interface {
 	SelfID() string
-	Instances(ctx context.Context) ([]string, error)
+	SelfRegion() string
+	Instances(ctx context.Context) ([]InstanceInfo, error)
 	Healthy() bool
+}
+
+// InstanceInfo captures membership instance data.
+type InstanceInfo struct {
+	ID     string
+	Region string
+	Weight int
 }
 
 // DegradeThresholds defines thresholds for mode switching.
@@ -36,6 +45,9 @@ type DegradeController struct {
 	redis            RedisClient
 	mship            Membership
 	thresholds       DegradeThresholds
+	region           string
+	requireQuorum    bool
+	quorumFraction   float64
 	lastRedisHealthy atomic.Int64
 	lastMshipHealthy atomic.Int64
 	logger           Logger
@@ -43,19 +55,25 @@ type DegradeController struct {
 }
 
 // NewDegradeController constructs a DegradeController.
-func NewDegradeController(redis RedisClient, mship Membership, th DegradeThresholds) *DegradeController {
+func NewDegradeController(redis RedisClient, mship Membership, th DegradeThresholds, region string, requireQuorum bool, quorumFraction float64) *DegradeController {
 	if th.RedisUnhealthyFor == 0 {
 		th.RedisUnhealthyFor = 500 * time.Millisecond
 	}
 	if th.MembershipUnhealthy == 0 {
 		th.MembershipUnhealthy = 2 * time.Second
 	}
+	if quorumFraction == 0 {
+		quorumFraction = 0.5
+	}
 
 	now := time.Now().UnixNano()
 	controller := &DegradeController{
-		redis:      redis,
-		mship:      mship,
-		thresholds: th,
+		redis:          redis,
+		mship:          mship,
+		thresholds:     th,
+		region:         region,
+		requireQuorum:  requireQuorum,
+		quorumFraction: quorumFraction,
 	}
 	controller.mode.Store(int32(ModeNormal))
 	controller.lastMode.Store(int32(ModeNormal))
@@ -80,6 +98,46 @@ func (dc *DegradeController) Mode() OperatingMode {
 	return OperatingMode(dc.mode.Load())
 }
 
+// RegionStatus returns regional membership counts and quorum status.
+func (dc *DegradeController) RegionStatus(ctx context.Context) (inRegion int, total int, ok bool) {
+	if dc == nil || dc.mship == nil {
+		if dc != nil && !dc.requireQuorum {
+			return 0, 0, true
+		}
+		return 0, 0, false
+	}
+	if !dc.requireQuorum {
+		instances, err := dc.mship.Instances(ctx)
+		if err != nil {
+			return 0, 0, true
+		}
+		for _, instance := range instances {
+			if instance.Region == dc.region {
+				inRegion++
+			}
+		}
+		return inRegion, len(instances), true
+	}
+	instances, err := dc.mship.Instances(ctx)
+	if err != nil {
+		return 0, 0, false
+	}
+	for _, instance := range instances {
+		if instance.Region == dc.region {
+			inRegion++
+		}
+	}
+	total = len(instances)
+	if total == 0 {
+		return inRegion, total, false
+	}
+	required := int(math.Ceil(float64(total) * dc.quorumFraction))
+	if required < 1 {
+		required = 1
+	}
+	return inRegion, total, inRegion >= required
+}
+
 // Update refreshes the current operating mode.
 func (dc *DegradeController) Update(ctx context.Context) {
 	if dc == nil {
@@ -93,6 +151,12 @@ func (dc *DegradeController) Update(ctx context.Context) {
 	mshipHealthy := true
 	if dc.mship != nil {
 		mshipHealthy = dc.mship.Healthy()
+	}
+	if dc.requireQuorum {
+		_, _, ok := dc.RegionStatus(ctx)
+		if !ok {
+			mshipHealthy = false
+		}
 	}
 	if redisHealthy {
 		dc.lastRedisHealthy.Store(now.UnixNano())

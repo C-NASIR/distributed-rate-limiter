@@ -264,14 +264,17 @@ func TestRateLimitHandler_CheckLimit_EmergencyMode_UsesFallback(t *testing.T) {
 	rules := NewRuleCache()
 	rules.ReplaceAll([]*Rule{{TenantID: "tenant", Resource: "resource", Limit: 10, Version: 1}})
 	redis := NewInMemoryRedis(nil)
-	membership := NewStaticMembership("self", []string{"self"})
+	membership := NewSingleInstanceMembership("self", "region")
 	thresholds := DegradeThresholds{RedisUnhealthyFor: 10 * time.Millisecond, MembershipUnhealthy: 20 * time.Millisecond}
-	degrade := NewDegradeController(redis, membership, thresholds)
+	degrade := NewDegradeController(redis, membership, thresholds, "region", false, 0)
 	fallback := &FallbackLimiter{
-		ownership: &RendezvousOwnership{m: membership},
-		policy:    normalizeFallbackPolicy(FallbackPolicy{}),
-		mode:      degrade,
-		local:     &LocalLimiterStore{},
+		ownership:   NewRendezvousOwnership(membership, "region", false, true),
+		mship:       membership,
+		region:      "region",
+		regionGroup: "region",
+		policy:      normalizeFallbackPolicy(FallbackPolicy{}),
+		mode:        degrade,
+		local:       &LocalLimiterStore{},
 	}
 	factory := &LimiterFactory{redis: redis, fallback: fallback, mode: degrade}
 	pool := NewLimiterPool(rules, factory, LimiterPolicy{Shards: 1, MaxEntriesShard: 2})
@@ -301,13 +304,16 @@ func TestRateLimitHandler_CheckLimit_EmergencyMode_UsesFallback(t *testing.T) {
 
 func newTestHandler(rules *RuleCache) *RateLimitHandler {
 	redis := NewInMemoryRedis(nil)
-	membership := NewStaticMembership("self", []string{"self"})
-	degrade := NewDegradeController(redis, membership, DegradeThresholds{})
+	membership := NewSingleInstanceMembership("self", "region")
+	degrade := NewDegradeController(redis, membership, DegradeThresholds{}, "region", false, 0)
 	fallback := &FallbackLimiter{
-		ownership: &RendezvousOwnership{m: membership},
-		policy:    normalizeFallbackPolicy(FallbackPolicy{}),
-		mode:      degrade,
-		local:     &LocalLimiterStore{},
+		ownership:   NewRendezvousOwnership(membership, "region", false, true),
+		mship:       membership,
+		region:      "region",
+		regionGroup: "region",
+		policy:      normalizeFallbackPolicy(FallbackPolicy{}),
+		mode:        degrade,
+		local:       &LocalLimiterStore{},
 	}
 	factory := &LimiterFactory{redis: redis, fallback: fallback, mode: degrade}
 	pool := NewLimiterPool(rules, factory, LimiterPolicy{Shards: 1, MaxEntriesShard: 4})

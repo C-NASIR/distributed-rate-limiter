@@ -40,7 +40,7 @@ func NewRateLimitHandler(rules *RuleCache, pool *LimiterPool, keys *KeyBuilder, 
 	}
 	inflight := NewInFlight()
 	requestTimeout := 2 * time.Second
-	return &RateLimitHandler{
+	handler := &RateLimitHandler{
 		rules:          rules,
 		pool:           pool,
 		keys:           keys,
@@ -54,6 +54,7 @@ func NewRateLimitHandler(rules *RuleCache, pool *LimiterPool, keys *KeyBuilder, 
 		inflight:       inflight,
 		requestTimeout: requestTimeout,
 	}
+	return handler
 }
 
 // CheckLimit evaluates a rate limit request.
@@ -94,18 +95,19 @@ func (h *RateLimitHandler) CheckLimit(ctx context.Context, req *CheckLimitReques
 	defer cancel()
 	start := time.Now()
 	span := Span(nil)
+	regionLabel := h.regionLabel()
 	if h.sampler != nil && h.sampler.Sampled(req.TraceID) {
 		ctx, span = h.tracer.StartSpan(ctx, "check")
 		span.SetAttribute("tenant_id", req.TenantID)
 		span.SetAttribute("resource", req.Resource)
-		span.SetAttribute("region", h.region)
+		span.SetAttribute("region", regionLabel)
 	}
 	defer func() {
 		if span != nil {
 			span.End()
 		}
 		if h.metrics != nil {
-			h.metrics.ObserveLatency("check", time.Since(start), h.region)
+			h.metrics.ObserveLatency("check", time.Since(start), regionLabel)
 		}
 	}()
 	rule, ok := h.rules.Get(req.TenantID, req.Resource)
@@ -193,7 +195,7 @@ func (h *RateLimitHandler) CheckLimitBatch(ctx context.Context, reqs []*CheckLim
 	start := time.Now()
 	defer func() {
 		if h.metrics != nil {
-			h.metrics.ObserveLatency("checkBatch", time.Since(start), h.region)
+			h.metrics.ObserveLatency("checkBatch", time.Since(start), h.regionLabel())
 		}
 	}()
 
@@ -245,7 +247,7 @@ func (h *RateLimitHandler) CheckLimitBatch(ctx context.Context, reqs []*CheckLim
 			groupCtx, span = h.tracer.StartSpan(groupCtx, "checkBatchGroup")
 			span.SetAttribute("tenant_id", group.TenantID)
 			span.SetAttribute("resource", group.Resource)
-			span.SetAttribute("region", h.region)
+			span.SetAttribute("region", h.regionLabel())
 		}
 		if _, ok := h.rules.Get(group.TenantID, group.Resource); !ok {
 			for _, idx := range group.Indexes {
@@ -310,7 +312,7 @@ func (h *RateLimitHandler) CheckLimitBatch(ctx context.Context, reqs []*CheckLim
 				resp.RetryAfter = decision.RetryAfter
 				resp.ErrorCode = ""
 				if usedFallback && h.metrics != nil {
-					h.metrics.IncFallback("fallback", h.region)
+					h.metrics.IncFallback("fallback", h.regionLabel())
 				}
 			}
 		}
@@ -361,12 +363,12 @@ func (h *RateLimitHandler) recordCheckMetrics(resp *CheckLimitResponse, algorith
 			result = "denied"
 		}
 	}
-	h.metrics.IncCheck(result, algorithm, h.region)
+	h.metrics.IncCheck(result, algorithm, h.regionLabel())
 	if resp.ErrorCode == "LIMITER_ERROR" || resp.ErrorCode == "LIMITER_UNAVAILABLE" {
-		h.metrics.IncRedisError("allow", h.region)
+		h.metrics.IncRedisError("allow", h.regionLabel())
 	}
 	if usedFallback {
-		h.metrics.IncFallback("fallback", h.region)
+		h.metrics.IncFallback("fallback", h.regionLabel())
 	}
 }
 
@@ -374,5 +376,12 @@ func (h *RateLimitHandler) recordBatchItemError(resp *CheckLimitResponse) {
 	if h.metrics == nil || resp == nil || resp.ErrorCode == "" {
 		return
 	}
-	h.metrics.IncBatchItemError(resp.ErrorCode, h.region)
+	h.metrics.IncBatchItemError(resp.ErrorCode, h.regionLabel())
+}
+
+func (h *RateLimitHandler) regionLabel() string {
+	if h == nil || h.region == "" {
+		return "unknown"
+	}
+	return h.region
 }

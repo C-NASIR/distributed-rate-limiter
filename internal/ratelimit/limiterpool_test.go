@@ -190,13 +190,16 @@ func waitForNewLimiter(t *testing.T, pool *LimiterPool, old Limiter) *LimiterHan
 
 func newTestLimiterPool(rules *RuleCache, policy LimiterPolicy) *LimiterPool {
 	redis := NewInMemoryRedis(nil)
-	membership := NewStaticMembership("self", []string{"self"})
-	degrade := NewDegradeController(redis, membership, DegradeThresholds{})
+	membership := NewSingleInstanceMembership("self", "region")
+	degrade := NewDegradeController(redis, membership, DegradeThresholds{}, "region", false, 0)
 	fallback := &FallbackLimiter{
-		ownership: &RendezvousOwnership{m: membership},
-		policy:    normalizeFallbackPolicy(FallbackPolicy{}),
-		mode:      degrade,
-		local:     &LocalLimiterStore{},
+		ownership:   NewRendezvousOwnership(membership, "region", false, true),
+		mship:       membership,
+		region:      "region",
+		regionGroup: "region",
+		policy:      normalizeFallbackPolicy(FallbackPolicy{}),
+		mode:        degrade,
+		local:       &LocalLimiterStore{},
 	}
 	factory := &LimiterFactory{redis: redis, fallback: fallback, mode: degrade}
 	return NewLimiterPool(rules, factory, policy)
