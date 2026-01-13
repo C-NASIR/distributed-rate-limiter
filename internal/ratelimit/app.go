@@ -31,7 +31,16 @@ func NewApplication(cfg *Config) (*Application, error) {
 	if cfg.Region == "" {
 		return nil, errors.New("region is required")
 	}
-	return &Application{Config: cfg, RuleCache: NewRuleCache()}, nil
+	rules := NewRuleCache()
+	factory := &LimiterFactory{}
+	pool := NewLimiterPool(rules, factory, cfg.LimiterPolicy)
+
+	return &Application{
+		Config:         cfg,
+		RuleCache:      rules,
+		LimiterFactory: factory,
+		LimiterPool:    pool,
+	}, nil
 }
 
 // Start begins background work for the application.
@@ -44,9 +53,6 @@ func (app *Application) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// LimiterPool is a placeholder for limiter pooling.
-type LimiterPool struct{}
-
 // KeyBuilder is a placeholder for key construction.
 type KeyBuilder struct{}
 
@@ -55,9 +61,6 @@ type DegradeController struct{}
 
 // FallbackLimiter is a placeholder for fallback limiting.
 type FallbackLimiter struct{}
-
-// LimiterFactory is a placeholder for limiter construction.
-type LimiterFactory struct{}
 
 // RateLimitHandler is a placeholder for rate limit transport wiring.
 type RateLimitHandler struct{}
@@ -76,9 +79,6 @@ type CacheSyncWorker struct{}
 
 // HealthLoop is a placeholder for health reporting.
 type HealthLoop struct{}
-
-// LimiterPolicy is a placeholder policy interface. TODO: define behavior.
-type LimiterPolicy interface{}
 
 // FallbackPolicy is a placeholder policy interface. TODO: define behavior.
 type FallbackPolicy interface{}
