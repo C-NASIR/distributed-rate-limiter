@@ -27,4 +27,13 @@ type Config struct {
 	Tracer            Tracer
 	Sampler           Sampler
 	Metrics           Metrics
+	HTTPReadTimeout   time.Duration
+	HTTPWriteTimeout  time.Duration
+	HTTPIdleTimeout   time.Duration
+	RequestTimeout    time.Duration
+	DrainTimeout      time.Duration
+	MaxBodyBytes      int64
+	EnableAuth        bool
+	AdminToken        string
+	Logger            Logger
 }

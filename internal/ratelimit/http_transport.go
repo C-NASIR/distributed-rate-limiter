@@ -7,19 +7,27 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // HTTPTransport serves the RateLimit and Admin APIs over HTTP.
 type HTTPTransport struct {
-	addr     string
-	srv      *http.Server
-	rate     RateLimitService
-	admin    AdminService
-	appReady func() bool
-	metrics  *InMemoryMetrics
-	mode     func() OperatingMode
-	mux      http.Handler
-	mu       sync.Mutex
+	addr         string
+	srv          *http.Server
+	rate         RateLimitService
+	admin        AdminService
+	appReady     func() bool
+	metrics      *InMemoryMetrics
+	mode         func() OperatingMode
+	mux          http.Handler
+	mu           sync.Mutex
+	readTimeout  time.Duration
+	writeTimeout time.Duration
+	idleTimeout  time.Duration
+	maxBodyBytes int64
+	enableAuth   bool
+	adminToken   string
+	logger       Logger
 }
 
 // NewHTTPTransport constructs a transport bound to an address.
@@ -66,7 +74,13 @@ func (t *HTTPTransport) Start() error {
 	}
 	t.mu.Lock()
 	if t.srv == nil {
-		t.srv = &http.Server{Addr: t.addr, Handler: handler}
+		t.srv = &http.Server{
+			Addr:         t.addr,
+			Handler:      handler,
+			ReadTimeout:  t.readTimeout,
+			WriteTimeout: t.writeTimeout,
+			IdleTimeout:  t.idleTimeout,
+		}
 	}
 	srv := t.srv
 	t.mu.Unlock()

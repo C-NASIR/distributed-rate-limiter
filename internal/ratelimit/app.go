@@ -4,6 +4,7 @@ package ratelimit
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,9 @@ type Application struct {
 	sampler          Sampler
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
+	inflight         *InFlight
+	drainTimeout     time.Duration
+	logger           Logger
 }
 
 // NewApplication validates configuration and prepares the application.
@@ -41,6 +45,48 @@ func NewApplication(cfg *Config) (*Application, error) {
 	}
 	if cfg.Region == "" {
 		return nil, errors.New("region is required")
+	}
+	if cfg.EnableHTTP && cfg.HTTPListenAddr == "" {
+		return nil, errors.New("http listen address is required")
+	}
+	if cfg.EnableAuth && cfg.AdminToken == "" {
+		return nil, errors.New("admin token is required")
+	}
+	if cfg.HTTPReadTimeout < 0 {
+		return nil, errors.New("http read timeout must be positive")
+	}
+	if cfg.HTTPWriteTimeout < 0 {
+		return nil, errors.New("http write timeout must be positive")
+	}
+	if cfg.HTTPIdleTimeout < 0 {
+		return nil, errors.New("http idle timeout must be positive")
+	}
+	if cfg.RequestTimeout < 0 {
+		return nil, errors.New("request timeout must be positive")
+	}
+	if cfg.DrainTimeout < 0 {
+		return nil, errors.New("drain timeout must be positive")
+	}
+	if cfg.HTTPReadTimeout == 0 {
+		cfg.HTTPReadTimeout = 5 * time.Second
+	}
+	if cfg.HTTPWriteTimeout == 0 {
+		cfg.HTTPWriteTimeout = 10 * time.Second
+	}
+	if cfg.HTTPIdleTimeout == 0 {
+		cfg.HTTPIdleTimeout = 60 * time.Second
+	}
+	if cfg.RequestTimeout == 0 {
+		cfg.RequestTimeout = 2 * time.Second
+	}
+	if cfg.DrainTimeout == 0 {
+		cfg.DrainTimeout = 5 * time.Second
+	}
+	if cfg.MaxBodyBytes <= 0 {
+		cfg.MaxBodyBytes = 1 << 20
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = NewStdLogger(os.Stdout)
 	}
 	if cfg.RuleDB == nil {
 		cfg.RuleDB = NewInMemoryRuleDB(nil)
@@ -76,6 +122,7 @@ func NewApplication(cfg *Config) (*Application, error) {
 	}
 	rules := NewRuleCache()
 	degrade := NewDegradeController(redis, membership, cfg.DegradeThresh)
+	degrade.SetLogger(cfg.Logger)
 	ownership := &RendezvousOwnership{m: membership}
 	fallback := &FallbackLimiter{
 		ownership: ownership,
@@ -101,8 +148,11 @@ func NewApplication(cfg *Config) (*Application, error) {
 		coalescer = NewCoalescer(cfg.CoalesceShards, cfg.CoalesceTTL)
 	}
 
+	inflight := NewInFlight()
 	rate := NewRateLimitHandler(rules, pool, keys, cfg.Region, respPool, tracer, sampler, metrics, coalescer)
 	rate.batch = bp
+	rate.inflight = inflight
+	rate.requestTimeout = cfg.RequestTimeout
 
 	var outboxWriter OutboxWriter
 	if writer, ok := cfg.Outbox.(OutboxWriter); ok {
@@ -132,6 +182,9 @@ func NewApplication(cfg *Config) (*Application, error) {
 		metrics:          metrics,
 		tracer:           tracer,
 		sampler:          sampler,
+		inflight:         inflight,
+		drainTimeout:     cfg.DrainTimeout,
+		logger:           cfg.Logger,
 	}
 
 	if cfg.EnableHTTP {
@@ -142,6 +195,13 @@ func NewApplication(cfg *Config) (*Application, error) {
 		if err := transport.ServeAdmin(app.AdminHandler); err != nil {
 			return nil, err
 		}
+		transport.readTimeout = cfg.HTTPReadTimeout
+		transport.writeTimeout = cfg.HTTPWriteTimeout
+		transport.idleTimeout = cfg.HTTPIdleTimeout
+		transport.maxBodyBytes = cfg.MaxBodyBytes
+		transport.enableAuth = cfg.EnableAuth
+		transport.adminToken = cfg.AdminToken
+		transport.logger = cfg.Logger
 		transport.metrics = app.metrics
 		transport.mode = app.Mode
 		app.httpTransport = transport
@@ -209,6 +269,12 @@ func (app *Application) Start(ctx context.Context) error {
 	}
 
 	app.ready.Store(true)
+	if app.logger != nil && app.Config != nil {
+		app.logger.Info("application started", map[string]any{
+			"region":       app.Config.Region,
+			"http_enabled": app.Config.EnableHTTP,
+		})
+	}
 
 	return nil
 }
@@ -221,15 +287,34 @@ func (app *Application) Shutdown(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if app.cancel != nil {
-		app.cancel()
-	}
 	app.ready.Store(false)
+	if app.logger != nil && app.Config != nil {
+		app.logger.Info("application shutdown", map[string]any{
+			"region":       app.Config.Region,
+			"http_enabled": app.Config.EnableHTTP,
+		})
+	}
+	if app.inflight != nil {
+		app.inflight.Close()
+	}
+	var drainErr error
+	if app.inflight != nil {
+		drainCtx := ctx
+		if app.drainTimeout > 0 {
+			var cancel context.CancelFunc
+			drainCtx, cancel = context.WithTimeout(ctx, app.drainTimeout)
+			defer cancel()
+		}
+		drainErr = app.inflight.Wait(drainCtx)
+	}
 	for _, transport := range app.transports {
 		if transport == nil {
 			continue
 		}
 		_ = transport.Shutdown(ctx)
+	}
+	if app.cancel != nil {
+		app.cancel()
 	}
 	done := make(chan struct{})
 	go func() {
@@ -238,6 +323,9 @@ func (app *Application) Shutdown(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
+		if drainErr != nil {
+			return drainErr
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

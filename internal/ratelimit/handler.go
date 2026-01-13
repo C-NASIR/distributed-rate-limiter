@@ -10,16 +10,18 @@ import (
 
 // RateLimitHandler handles rate limit requests.
 type RateLimitHandler struct {
-	rules    *RuleCache
-	pool     *LimiterPool
-	keys     *KeyBuilder
-	region   string
-	respPool *ResponsePool
-	batch    *BatchPlanner
-	tracer   Tracer
-	sampler  Sampler
-	metrics  Metrics
-	coalescer *Coalescer
+	rules          *RuleCache
+	pool           *LimiterPool
+	keys           *KeyBuilder
+	region         string
+	respPool       *ResponsePool
+	batch          *BatchPlanner
+	tracer         Tracer
+	sampler        Sampler
+	metrics        Metrics
+	coalescer      *Coalescer
+	inflight       *InFlight
+	requestTimeout time.Duration
 }
 
 // NewRateLimitHandler constructs a RateLimitHandler.
@@ -36,17 +38,21 @@ func NewRateLimitHandler(rules *RuleCache, pool *LimiterPool, keys *KeyBuilder, 
 	if coalescer == nil {
 		coalescer = NewCoalescer(0, 0)
 	}
+	inflight := NewInFlight()
+	requestTimeout := 2 * time.Second
 	return &RateLimitHandler{
-		rules:     rules,
-		pool:      pool,
-		keys:      keys,
-		region:    region,
-		respPool:  rp,
-		batch:     newBatchPlanner(),
-		tracer:    tracer,
-		sampler:   sampler,
-		metrics:   metrics,
-		coalescer: coalescer,
+		rules:          rules,
+		pool:           pool,
+		keys:           keys,
+		region:         region,
+		respPool:       rp,
+		batch:          newBatchPlanner(),
+		tracer:         tracer,
+		sampler:        sampler,
+		metrics:        metrics,
+		coalescer:      coalescer,
+		inflight:       inflight,
+		requestTimeout: requestTimeout,
 	}
 }
 
@@ -65,11 +71,27 @@ func (h *RateLimitHandler) CheckLimit(ctx context.Context, req *CheckLimitReques
 		return nil, ErrInvalidInput
 	}
 	if req.Cost <= 0 {
-		return nil, ErrInvalidInput
+		return nil, Wrap(CodeInvalidCost, "invalid cost", ErrInvalidInput)
 	}
 	if h == nil || h.rules == nil || h.pool == nil || h.keys == nil || h.respPool == nil {
-		return nil, errors.New("handler is not initialized")
+		return nil, Wrap(CodeLimiterError, "handler not initialized", nil)
 	}
+	if h.inflight == nil {
+		h.inflight = NewInFlight()
+	}
+	if !h.inflight.Begin() {
+		return nil, Wrap(CodeLimiterUnavailable, "server draining", nil)
+	}
+	defer h.inflight.End()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestTimeout := h.requestTimeout
+	if requestTimeout <= 0 {
+		requestTimeout = 2 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
 	start := time.Now()
 	span := Span(nil)
 	if h.sampler != nil && h.sampler.Sampled(req.TraceID) {
@@ -150,8 +172,24 @@ func (h *RateLimitHandler) CheckLimitBatch(ctx context.Context, reqs []*CheckLim
 		return []*CheckLimitResponse{}, nil
 	}
 	if h == nil || h.rules == nil || h.pool == nil || h.keys == nil || h.respPool == nil {
-		return nil, errors.New("handler is not initialized")
+		return nil, Wrap(CodeLimiterError, "handler not initialized", nil)
 	}
+	if h.inflight == nil {
+		h.inflight = NewInFlight()
+	}
+	if !h.inflight.Begin() {
+		return nil, Wrap(CodeLimiterUnavailable, "server draining", nil)
+	}
+	defer h.inflight.End()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestTimeout := h.requestTimeout
+	if requestTimeout <= 0 {
+		requestTimeout = 2 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
 	start := time.Now()
 	defer func() {
 		if h.metrics != nil {

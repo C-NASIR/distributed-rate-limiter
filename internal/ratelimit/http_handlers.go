@@ -3,13 +3,12 @@ package ratelimit
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"strconv"
 )
 
-const maxRequestBodySize = 1 << 20
+const defaultMaxBodyBytes = 1 << 20
 
 type httpErrorResponse struct {
 	Error string `json:"error"`
@@ -32,21 +31,22 @@ func (t *HTTPTransport) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var httpReq httpCheckRequest
-	if err := decodeJSON(w, r, &httpReq); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if err := t.decodeJSON(w, r, &httpReq); err != nil {
+		t.writeError(w, r, http.StatusBadRequest, err)
 		return
 	}
 	if httpReq.TenantID == "" || httpReq.UserID == "" || httpReq.Resource == "" || httpReq.Cost <= 0 {
-		writeError(w, http.StatusBadRequest, ErrInvalidInput)
+		t.writeError(w, r, http.StatusBadRequest, ErrInvalidInput)
 		return
 	}
 	resp, err := t.rate.CheckLimit(r.Context(), toCheckLimitRequest(httpReq))
 	if err != nil {
-		if errors.Is(err, ErrInvalidInput) {
-			writeError(w, http.StatusBadRequest, err)
-			return
+		switch CodeOf(err) {
+		case CodeInvalidInput, CodeInvalidCost:
+			t.writeError(w, r, http.StatusBadRequest, err)
+		default:
+			t.writeError(w, r, http.StatusInternalServerError, err)
 		}
-		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, fromCheckLimitResponse(resp))
@@ -58,8 +58,8 @@ func (t *HTTPTransport) handleCheckBatch(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var httpReqs []httpCheckRequest
-	if err := decodeJSON(w, r, &httpReqs); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if err := t.decodeJSON(w, r, &httpReqs); err != nil {
+		t.writeError(w, r, http.StatusBadRequest, err)
 		return
 	}
 	requests := make([]*CheckLimitRequest, len(httpReqs))
@@ -68,11 +68,12 @@ func (t *HTTPTransport) handleCheckBatch(w http.ResponseWriter, r *http.Request)
 	}
 	responses, err := t.rate.CheckLimitBatch(r.Context(), requests)
 	if err != nil {
-		if errors.Is(err, ErrInvalidInput) {
-			writeError(w, http.StatusBadRequest, err)
-			return
+		switch CodeOf(err) {
+		case CodeInvalidInput, CodeInvalidCost:
+			t.writeError(w, r, http.StatusBadRequest, err)
+		default:
+			t.writeError(w, r, http.StatusInternalServerError, err)
 		}
-		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	result := make([]httpCheckResponse, len(responses))
@@ -83,6 +84,9 @@ func (t *HTTPTransport) handleCheckBatch(w http.ResponseWriter, r *http.Request)
 }
 
 func (t *HTTPTransport) handleRules(w http.ResponseWriter, r *http.Request) {
+	if !t.authorizeAdmin(w, r) {
+		return
+	}
 	switch r.Method {
 	case http.MethodPost:
 		t.handleCreateRule(w, r)
@@ -99,17 +103,17 @@ func (t *HTTPTransport) handleRules(w http.ResponseWriter, r *http.Request) {
 
 func (t *HTTPTransport) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 	var httpReq httpCreateRuleRequest
-	if err := decodeJSON(w, r, &httpReq); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if err := t.decodeJSON(w, r, &httpReq); err != nil {
+		t.writeError(w, r, http.StatusBadRequest, err)
 		return
 	}
 	if httpReq.TenantID == "" || httpReq.Resource == "" || httpReq.Algorithm == "" || httpReq.Limit <= 0 {
-		writeError(w, http.StatusBadRequest, ErrInvalidInput)
+		t.writeError(w, r, http.StatusBadRequest, ErrInvalidInput)
 		return
 	}
 	rule, err := t.admin.CreateRule(r.Context(), toCreateRuleRequest(httpReq))
 	if err != nil {
-		writeAdminError(w, err)
+		t.writeAdminError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, fromRule(rule))
@@ -117,17 +121,17 @@ func (t *HTTPTransport) handleCreateRule(w http.ResponseWriter, r *http.Request)
 
 func (t *HTTPTransport) handleUpdateRule(w http.ResponseWriter, r *http.Request) {
 	var httpReq httpUpdateRuleRequest
-	if err := decodeJSON(w, r, &httpReq); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if err := t.decodeJSON(w, r, &httpReq); err != nil {
+		t.writeError(w, r, http.StatusBadRequest, err)
 		return
 	}
 	if httpReq.TenantID == "" || httpReq.Resource == "" || httpReq.Algorithm == "" || httpReq.Limit <= 0 {
-		writeError(w, http.StatusBadRequest, ErrInvalidInput)
+		t.writeError(w, r, http.StatusBadRequest, ErrInvalidInput)
 		return
 	}
 	rule, err := t.admin.UpdateRule(r.Context(), toUpdateRuleRequest(httpReq))
 	if err != nil {
-		writeAdminError(w, err)
+		t.writeAdminError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, fromRule(rule))
@@ -139,16 +143,16 @@ func (t *HTTPTransport) handleDeleteRule(w http.ResponseWriter, r *http.Request)
 	resource := query.Get("resource")
 	versionStr := query.Get("expectedVersion")
 	if tenantID == "" || resource == "" || versionStr == "" {
-		writeError(w, http.StatusBadRequest, ErrInvalidInput)
+		t.writeError(w, r, http.StatusBadRequest, ErrInvalidInput)
 		return
 	}
 	expectedVersion, err := strconv.ParseInt(versionStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, ErrInvalidInput)
+		t.writeError(w, r, http.StatusBadRequest, ErrInvalidInput)
 		return
 	}
 	if err := t.admin.DeleteRule(r.Context(), tenantID, resource, expectedVersion); err != nil {
-		writeAdminError(w, err)
+		t.writeAdminError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -159,12 +163,12 @@ func (t *HTTPTransport) handleGetRule(w http.ResponseWriter, r *http.Request) {
 	tenantID := query.Get("tenantID")
 	resource := query.Get("resource")
 	if tenantID == "" || resource == "" {
-		writeError(w, http.StatusBadRequest, ErrInvalidInput)
+		t.writeError(w, r, http.StatusBadRequest, ErrInvalidInput)
 		return
 	}
 	rule, err := t.admin.GetRule(r.Context(), tenantID, resource)
 	if err != nil {
-		writeAdminError(w, err)
+		t.writeAdminError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, fromRule(rule))
@@ -175,14 +179,17 @@ func (t *HTTPTransport) handleRulesList(w http.ResponseWriter, r *http.Request) 
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	if !t.authorizeAdmin(w, r) {
+		return
+	}
 	tenantID := r.URL.Query().Get("tenantID")
 	if tenantID == "" {
-		writeError(w, http.StatusBadRequest, ErrInvalidInput)
+		t.writeError(w, r, http.StatusBadRequest, ErrInvalidInput)
 		return
 	}
 	rules, err := t.admin.ListRules(r.Context(), tenantID)
 	if err != nil {
-		writeAdminError(w, err)
+		t.writeAdminError(w, r, err)
 		return
 	}
 	resp := make([]httpRuleResponse, len(rules))
@@ -243,11 +250,15 @@ func (t *HTTPTransport) handleMode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"mode": label})
 }
 
-func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+func (t *HTTPTransport) decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	if r.Body == nil {
 		return ErrInvalidInput
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	maxBytes := t.maxBodyBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultMaxBodyBytes
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
@@ -265,19 +276,60 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-func writeError(w http.ResponseWriter, status int, err error) {
+func (t *HTTPTransport) writeError(w http.ResponseWriter, r *http.Request, status int, err error) {
+	if t != nil {
+		t.logRequestError(r, status, err)
+	}
 	writeJSON(w, status, httpErrorResponse{Error: err.Error()})
 }
 
-func writeAdminError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, ErrInvalidInput):
-		writeError(w, http.StatusBadRequest, err)
-	case errors.Is(err, ErrConflict):
-		writeError(w, http.StatusConflict, err)
-	case errors.Is(err, ErrNotFound):
-		writeError(w, http.StatusNotFound, err)
+func (t *HTTPTransport) writeAdminError(w http.ResponseWriter, r *http.Request, err error) {
+	status := statusForCode(CodeOf(err))
+	t.writeError(w, r, status, err)
+}
+
+func statusForCode(code ErrorCode) int {
+	switch code {
+	case CodeInvalidInput, CodeInvalidCost:
+		return http.StatusBadRequest
+	case CodeConflict:
+		return http.StatusConflict
+	case CodeNotFound:
+		return http.StatusNotFound
+	case CodeUnauthorized:
+		return http.StatusUnauthorized
+	case CodeForbidden:
+		return http.StatusForbidden
 	default:
-		writeError(w, http.StatusInternalServerError, err)
+		return http.StatusInternalServerError
 	}
+}
+
+func (t *HTTPTransport) authorizeAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if t == nil || !t.enableAuth {
+		return true
+	}
+	expected := "Bearer " + t.adminToken
+	if r.Header.Get("Authorization") != expected {
+		t.writeError(w, r, http.StatusUnauthorized, Wrap(CodeUnauthorized, "unauthorized", nil))
+		return false
+	}
+	return true
+}
+
+func (t *HTTPTransport) logRequestError(r *http.Request, status int, err error) {
+	if t == nil || t.logger == nil || r == nil || err == nil {
+		return
+	}
+	fields := map[string]any{
+		"method": r.Method,
+		"path":   r.URL.Path,
+		"status": status,
+		"error":  err.Error(),
+	}
+	if status >= http.StatusInternalServerError {
+		t.logger.Error("http request error", fields)
+		return
+	}
+	t.logger.Info("http request error", fields)
 }

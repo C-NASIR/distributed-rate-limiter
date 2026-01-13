@@ -38,6 +38,8 @@ type DegradeController struct {
 	thresholds       DegradeThresholds
 	lastRedisHealthy atomic.Int64
 	lastMshipHealthy atomic.Int64
+	logger           Logger
+	lastMode         atomic.Int32
 }
 
 // NewDegradeController constructs a DegradeController.
@@ -56,9 +58,18 @@ func NewDegradeController(redis RedisClient, mship Membership, th DegradeThresho
 		thresholds: th,
 	}
 	controller.mode.Store(int32(ModeNormal))
+	controller.lastMode.Store(int32(ModeNormal))
 	controller.lastRedisHealthy.Store(now)
 	controller.lastMshipHealthy.Store(now)
 	return controller
+}
+
+// SetLogger configures a logger for mode changes.
+func (dc *DegradeController) SetLogger(l Logger) {
+	if dc == nil {
+		return
+	}
+	dc.logger = l
 }
 
 // Mode returns the current operating mode.
@@ -101,4 +112,26 @@ func (dc *DegradeController) Update(ctx context.Context) {
 		}
 	}
 	dc.mode.Store(int32(mode))
+	prev := OperatingMode(dc.lastMode.Load())
+	if prev != mode {
+		dc.lastMode.Store(int32(mode))
+		if dc.logger != nil {
+			dc.logger.Info("mode changed", map[string]any{
+				"old":       modeLabel(prev),
+				"new":       modeLabel(mode),
+				"timestamp": now.UnixNano(),
+			})
+		}
+	}
+}
+
+func modeLabel(mode OperatingMode) string {
+	switch mode {
+	case ModeDegraded:
+		return "degraded"
+	case ModeEmergency:
+		return "emergency"
+	default:
+		return "normal"
+	}
 }
