@@ -134,6 +134,42 @@ func NewApplication(cfg *Config) (*Application, error) {
 	if cfg.CoalesceShards == 0 {
 		cfg.CoalesceShards = 64
 	}
+	if cfg.BreakerOptions.FailureThreshold == 0 {
+		cfg.BreakerOptions.FailureThreshold = 10
+	}
+	if cfg.BreakerOptions.OpenDuration == 0 {
+		cfg.BreakerOptions.OpenDuration = 200 * time.Millisecond
+	}
+	if cfg.BreakerOptions.HalfOpenMaxCalls == 0 {
+		cfg.BreakerOptions.HalfOpenMaxCalls = 5
+	}
+	if cfg.CacheSyncInterval == 0 {
+		cfg.CacheSyncInterval = 200 * time.Millisecond
+	}
+	if cfg.HealthInterval == 0 {
+		cfg.HealthInterval = 100 * time.Millisecond
+	}
+	if cfg.LimiterPolicy.Shards == 0 {
+		cfg.LimiterPolicy.Shards = 16
+	}
+	if cfg.LimiterPolicy.MaxEntriesShard == 0 {
+		cfg.LimiterPolicy.MaxEntriesShard = 1024
+	}
+	if cfg.LimiterPolicy.QuiesceWindow == 0 {
+		cfg.LimiterPolicy.QuiesceWindow = 50 * time.Millisecond
+	}
+	if cfg.LimiterPolicy.CloseTimeout == 0 {
+		cfg.LimiterPolicy.CloseTimeout = 2 * time.Second
+	}
+	if cfg.FallbackPolicy == (FallbackPolicy{}) {
+		cfg.FallbackPolicy = normalizeFallbackPolicy(cfg.FallbackPolicy)
+	}
+	if cfg.DegradeThresh.RedisUnhealthyFor == 0 {
+		cfg.DegradeThresh.RedisUnhealthyFor = 500 * time.Millisecond
+	}
+	if cfg.DegradeThresh.MembershipUnhealthy == 0 {
+		cfg.DegradeThresh.MembershipUnhealthy = 2 * time.Second
+	}
 	if cfg.RegionGroup == "" {
 		cfg.RegionGroup = cfg.Region
 	}

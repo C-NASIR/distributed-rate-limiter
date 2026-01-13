@@ -1,0 +1,35 @@
+{
+  "Region": "local",
+  "EnableHTTP": true,
+  "HTTPListenAddr": ":8080",
+  "EnableGRPC": true,
+  "GRPCListenAddr": ":9090",
+  "CacheSyncInterval": 200,
+  "HealthInterval": 100,
+  "TraceSampleRate": 100,
+  "CoalesceEnabled": true,
+  "CoalesceTTL": 10,
+  "BreakerOptions": {
+    "FailureThreshold": 10,
+    "OpenDuration": 200,
+    "HalfOpenMaxCalls": 5
+  },
+  "LimiterPolicy": {
+    "Shards": 16,
+    "MaxEntriesShard": 1024,
+    "QuiesceWindow": 50,
+    "CloseTimeout": 2000
+  },
+  "FallbackPolicy": {
+    "LocalCapPerWindow": 100,
+    "DenyWhenNotOwner": true,
+    "EmergencyAllowSmallCap": true,
+    "EmergencyCapPerWindow": 10
+  },
+  "DegradeThresh": {
+    "RedisUnhealthyFor": 500,
+    "MembershipUnhealthy": 2000,
+    "ErrorRateWindow": 0
+  },
+  "EnableAuth": false
+}
