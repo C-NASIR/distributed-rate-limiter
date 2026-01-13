@@ -14,6 +14,9 @@ type Config struct {
 	Channel           string
 	HTTPListenAddr    string
 	EnableHTTP        bool
+	EnableGRPC        bool
+	GRPCListenAddr    string
+	GRPCKeepAlive     time.Duration
 	TraceSampleRate   int
 	CoalesceEnabled   bool
 	CoalesceTTL       time.Duration

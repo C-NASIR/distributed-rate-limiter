@@ -13,6 +13,11 @@ func TestConfigValidation(t *testing.T) {
 		t.Fatalf("expected error for missing http listen address")
 	}
 
+	_, err = NewApplication(&Config{Region: "test", EnableGRPC: true})
+	if err == nil {
+		t.Fatalf("expected error for missing grpc listen address")
+	}
+
 	_, err = NewApplication(&Config{Region: "test", EnableAuth: true})
 	if err == nil {
 		t.Fatalf("expected error for missing admin token")

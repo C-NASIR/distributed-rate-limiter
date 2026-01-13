@@ -20,6 +20,8 @@ func main() {
 		Region:         "local",
 		EnableHTTP:     true,
 		HTTPListenAddr: ":8080",
+		EnableGRPC:     true,
+		GRPCListenAddr: ":9090",
 	}
 	app, err := ratelimit.NewApplication(cfg)
 	if err != nil {

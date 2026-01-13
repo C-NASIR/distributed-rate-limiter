@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+package ratelimit.v1;
+
+option go_package = "ratelimit/gen/ratelimit/v1;ratelimitv1";
+
+message CheckLimitRequest {
+  string trace_id = 1;
+  string tenant_id = 2;
+  string user_id = 3;
+  string resource = 4;
+  int64 cost = 5;
+}
+
+message CheckLimitResponse {
+  bool allowed = 1;
+  int64 remaining = 2;
+  int64 limit = 3;
+  int64 reset_after_ms = 4;
+  int64 retry_after_ms = 5;
+  string error_code = 6;
+}
+
+message Rule {
+  string tenant_id = 1;
+  string resource = 2;
+  string algorithm = 3;
+  int64 limit = 4;
+  int64 window_ms = 5;
+  int64 burst_size = 6;
+  int64 version = 7;
+  int64 updated_at_unix_ms = 8;
+}
+
+message CreateRuleRequest {
+  string tenant_id = 1;
+  string resource = 2;
+  string algorithm = 3;
+  int64 limit = 4;
+  int64 window_ms = 5;
+  int64 burst_size = 6;
+  string idempotency_key = 7;
+}
+
+message UpdateRuleRequest {
+  string tenant_id = 1;
+  string resource = 2;
+  string algorithm = 3;
+  int64 limit = 4;
+  int64 window_ms = 5;
+  int64 burst_size = 6;
+  int64 expected_version = 7;
+}
+
+message DeleteRuleRequest {
+  string tenant_id = 1;
+  string resource = 2;
+  int64 expected_version = 3;
+}
+
+message GetRuleRequest {
+  string tenant_id = 1;
+  string resource = 2;
+}
+
+message ListRulesRequest {
+  string tenant_id = 1;
+}
+
+message ListRulesResponse {
+  repeated Rule rules = 1;
+}
+
+message BatchCheckLimitRequest {
+  repeated CheckLimitRequest requests = 1;
+}
+
+message BatchCheckLimitResponse {
+  repeated CheckLimitResponse responses = 1;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+}
+
+service RateLimitService {
+  rpc CheckLimit(CheckLimitRequest) returns (CheckLimitResponse);
+  rpc CheckLimitBatch(BatchCheckLimitRequest) returns (BatchCheckLimitResponse);
+}
+
+service AdminService {
+  rpc CreateRule(CreateRuleRequest) returns (Rule);
+  rpc UpdateRule(UpdateRuleRequest) returns (Rule);
+  rpc DeleteRule(DeleteRuleRequest) returns (HealthResponse);
+  rpc GetRule(GetRuleRequest) returns (Rule);
+  rpc ListRules(ListRulesRequest) returns (ListRulesResponse);
+}
+
+service HealthService {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc Ready(HealthRequest) returns (HealthResponse);
+  rpc Mode(HealthRequest) returns (HealthResponse);
+}

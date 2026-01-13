@@ -27,6 +27,7 @@ type Application struct {
 	HealthLoop       *HealthLoop
 	ready            atomic.Bool
 	httpTransport    *HTTPTransport
+	grpcTransport    *GRPCTransport
 	transports       []Transport
 	metrics          *InMemoryMetrics
 	tracer           Tracer
@@ -49,6 +50,10 @@ func NewApplication(cfg *Config) (*Application, error) {
 	if cfg.EnableHTTP && cfg.HTTPListenAddr == "" {
 		return nil, errors.New("http listen address is required")
 	}
+	grpcAddrProvided := cfg.GRPCListenAddr != ""
+	if cfg.EnableGRPC && !grpcAddrProvided {
+		return nil, errors.New("grpc listen address is required")
+	}
 	if cfg.EnableAuth && cfg.AdminToken == "" {
 		return nil, errors.New("admin token is required")
 	}
@@ -60,6 +65,9 @@ func NewApplication(cfg *Config) (*Application, error) {
 	}
 	if cfg.HTTPIdleTimeout < 0 {
 		return nil, errors.New("http idle timeout must be positive")
+	}
+	if cfg.GRPCKeepAlive < 0 {
+		return nil, errors.New("grpc keep alive must be positive")
 	}
 	if cfg.RequestTimeout < 0 {
 		return nil, errors.New("request timeout must be positive")
@@ -75,6 +83,12 @@ func NewApplication(cfg *Config) (*Application, error) {
 	}
 	if cfg.HTTPIdleTimeout == 0 {
 		cfg.HTTPIdleTimeout = 60 * time.Second
+	}
+	if cfg.GRPCListenAddr == "" {
+		cfg.GRPCListenAddr = ":9090"
+	}
+	if cfg.GRPCKeepAlive == 0 {
+		cfg.GRPCKeepAlive = 60 * time.Second
 	}
 	if cfg.RequestTimeout == 0 {
 		cfg.RequestTimeout = 2 * time.Second
@@ -208,6 +222,26 @@ func NewApplication(cfg *Config) (*Application, error) {
 		app.transports = append(app.transports, transport)
 	}
 
+	if cfg.EnableGRPC {
+		transport := NewGRPCTransport(cfg.GRPCListenAddr, app.Ready, app.Mode, grpcTransportConfig{
+			enableAuth: cfg.EnableAuth,
+			adminToken: cfg.AdminToken,
+			keepAlive:  cfg.GRPCKeepAlive,
+			tracer:     app.tracer,
+			sampler:    app.sampler,
+			metrics:    app.metrics,
+			logger:     cfg.Logger,
+		})
+		if err := transport.ServeRateLimit(app.RateLimitHandler); err != nil {
+			return nil, err
+		}
+		if err := transport.ServeAdmin(app.AdminHandler); err != nil {
+			return nil, err
+		}
+		app.grpcTransport = transport
+		app.transports = append(app.transports, transport)
+	}
+
 	return app, nil
 }
 
@@ -267,12 +301,20 @@ func (app *Application) Start(ctx context.Context) error {
 			_ = app.httpTransport.Start()
 		}()
 	}
+	if app.grpcTransport != nil {
+		app.wg.Add(1)
+		go func() {
+			defer app.wg.Done()
+			_ = app.grpcTransport.Start()
+		}()
+	}
 
 	app.ready.Store(true)
 	if app.logger != nil && app.Config != nil {
 		app.logger.Info("application started", map[string]any{
 			"region":       app.Config.Region,
 			"http_enabled": app.Config.EnableHTTP,
+			"grpc_enabled": app.Config.EnableGRPC,
 		})
 	}
 
@@ -292,6 +334,7 @@ func (app *Application) Shutdown(ctx context.Context) error {
 		app.logger.Info("application shutdown", map[string]any{
 			"region":       app.Config.Region,
 			"http_enabled": app.Config.EnableHTTP,
+			"grpc_enabled": app.Config.EnableGRPC,
 		})
 	}
 	if app.inflight != nil {
