@@ -2,8 +2,8 @@ package ratelimit
 
 import (
 	"context"
-	"errors"
 	"testing"
+	"time"
 )
 
 func TestKeyBuilder_BuildAndReuse(t *testing.T) {
@@ -53,10 +53,7 @@ func TestRateLimitHandler_RuleNotFound(t *testing.T) {
 	t.Parallel()
 
 	rules := NewRuleCache()
-	pool := NewLimiterPool(rules, &LimiterFactory{}, LimiterPolicy{Shards: 1, MaxEntriesShard: 2})
-	keys := &KeyBuilder{bufPool: NewByteBufferPool(64)}
-	respPool := NewResponsePool()
-	handler := NewRateLimitHandler(rules, pool, keys, "region", respPool)
+	handler := newTestHandler(rules)
 
 	resp, err := handler.CheckLimit(context.Background(), &CheckLimitRequest{
 		TenantID: "tenant",
@@ -78,10 +75,7 @@ func TestRateLimitHandler_Success(t *testing.T) {
 
 	rules := NewRuleCache()
 	rules.ReplaceAll([]*Rule{{TenantID: "tenant", Resource: "resource", Limit: 10, Version: 1}})
-	pool := NewLimiterPool(rules, &LimiterFactory{}, LimiterPolicy{Shards: 1, MaxEntriesShard: 2})
-	keys := &KeyBuilder{bufPool: NewByteBufferPool(64)}
-	respPool := NewResponsePool()
-	handler := NewRateLimitHandler(rules, pool, keys, "region", respPool)
+	handler := newTestHandler(rules)
 
 	resp, err := handler.CheckLimit(context.Background(), &CheckLimitRequest{
 		TenantID: "tenant",
@@ -102,10 +96,7 @@ func TestRateLimitHandler_InvalidRequest_ReturnsError(t *testing.T) {
 	t.Parallel()
 
 	rules := NewRuleCache()
-	pool := NewLimiterPool(rules, &LimiterFactory{}, LimiterPolicy{Shards: 1, MaxEntriesShard: 2})
-	keys := &KeyBuilder{bufPool: NewByteBufferPool(64)}
-	respPool := NewResponsePool()
-	handler := NewRateLimitHandler(rules, pool, keys, "region", respPool)
+	handler := newTestHandler(rules)
 
 	if _, err := handler.CheckLimit(context.Background(), nil); err == nil {
 		t.Fatalf("expected error for nil request")
@@ -122,10 +113,7 @@ func TestRateLimitHandler_CheckLimitBatch_Empty(t *testing.T) {
 	t.Parallel()
 
 	rules := NewRuleCache()
-	pool := NewLimiterPool(rules, &LimiterFactory{}, LimiterPolicy{Shards: 1, MaxEntriesShard: 2})
-	keys := &KeyBuilder{bufPool: NewByteBufferPool(64)}
-	respPool := NewResponsePool()
-	handler := NewRateLimitHandler(rules, pool, keys, "region", respPool)
+	handler := newTestHandler(rules)
 
 	resp, err := handler.CheckLimitBatch(context.Background(), nil)
 	if err != nil {
@@ -152,10 +140,7 @@ func TestRateLimitHandler_CheckLimitBatch_PreservesOrder(t *testing.T) {
 		{TenantID: "tenant-a", Resource: "resource-1", Limit: 10, Version: 1},
 		{TenantID: "tenant-b", Resource: "resource-2", Limit: 5, Version: 1},
 	})
-	pool := NewLimiterPool(rules, &LimiterFactory{}, LimiterPolicy{Shards: 1, MaxEntriesShard: 4})
-	keys := &KeyBuilder{bufPool: NewByteBufferPool(64)}
-	respPool := NewResponsePool()
-	handler := NewRateLimitHandler(rules, pool, keys, "region", respPool)
+	handler := newTestHandler(rules)
 
 	reqs := []*CheckLimitRequest{
 		{TenantID: "tenant-a", Resource: "resource-1", UserID: "user-1", Cost: 1},
@@ -187,10 +172,7 @@ func TestRateLimitHandler_CheckLimitBatch_PerItemValidation(t *testing.T) {
 
 	rules := NewRuleCache()
 	rules.ReplaceAll([]*Rule{{TenantID: "tenant", Resource: "resource", Limit: 10, Version: 1}})
-	pool := NewLimiterPool(rules, &LimiterFactory{}, LimiterPolicy{Shards: 1, MaxEntriesShard: 4})
-	keys := &KeyBuilder{bufPool: NewByteBufferPool(64)}
-	respPool := NewResponsePool()
-	handler := NewRateLimitHandler(rules, pool, keys, "region", respPool)
+	handler := newTestHandler(rules)
 
 	reqs := []*CheckLimitRequest{
 		nil,
@@ -223,10 +205,7 @@ func TestRateLimitHandler_CheckLimitBatch_RuleNotFoundPerItem(t *testing.T) {
 
 	rules := NewRuleCache()
 	rules.ReplaceAll([]*Rule{{TenantID: "tenant", Resource: "resource", Limit: 10, Version: 1}})
-	pool := NewLimiterPool(rules, &LimiterFactory{}, LimiterPolicy{Shards: 1, MaxEntriesShard: 4})
-	keys := &KeyBuilder{bufPool: NewByteBufferPool(64)}
-	respPool := NewResponsePool()
-	handler := NewRateLimitHandler(rules, pool, keys, "region", respPool)
+	handler := newTestHandler(rules)
 
 	reqs := []*CheckLimitRequest{
 		{TenantID: "tenant", Resource: "missing", UserID: "user", Cost: 1},
@@ -251,10 +230,7 @@ func TestRateLimitHandler_CheckLimitBatch_LimiterUnavailablePerGroup(t *testing.
 
 	rules := NewRuleCache()
 	rules.ReplaceAll([]*Rule{{TenantID: "tenant", Resource: "resource", Limit: 10, Version: 1}})
-	factory := &LimiterFactory{CreateFunc: func(rule *Rule) (Limiter, RuleParams, error) {
-		return nil, RuleParams{}, errors.New("boom")
-	}}
-	pool := NewLimiterPool(rules, factory, LimiterPolicy{Shards: 1, MaxEntriesShard: 4})
+	pool := NewLimiterPool(rules, &LimiterFactory{}, LimiterPolicy{Shards: 1, MaxEntriesShard: 4})
 	keys := &KeyBuilder{bufPool: NewByteBufferPool(64)}
 	respPool := NewResponsePool()
 	handler := NewRateLimitHandler(rules, pool, keys, "region", respPool)
@@ -280,4 +256,62 @@ func releaseResponses(handler *RateLimitHandler, responses []*CheckLimitResponse
 	for _, resp := range responses {
 		handler.ReleaseResponse(resp)
 	}
+}
+
+func TestRateLimitHandler_CheckLimit_EmergencyMode_UsesFallback(t *testing.T) {
+	t.Parallel()
+
+	rules := NewRuleCache()
+	rules.ReplaceAll([]*Rule{{TenantID: "tenant", Resource: "resource", Limit: 10, Version: 1}})
+	redis := NewInMemoryRedis(nil)
+	membership := NewStaticMembership("self", []string{"self"})
+	thresholds := DegradeThresholds{RedisUnhealthyFor: 10 * time.Millisecond, MembershipUnhealthy: 20 * time.Millisecond}
+	degrade := NewDegradeController(redis, membership, thresholds)
+	fallback := &FallbackLimiter{
+		ownership: &RendezvousOwnership{m: membership},
+		policy:    normalizeFallbackPolicy(FallbackPolicy{}),
+		mode:      degrade,
+		local:     &LocalLimiterStore{},
+	}
+	factory := &LimiterFactory{redis: redis, fallback: fallback, mode: degrade}
+	pool := NewLimiterPool(rules, factory, LimiterPolicy{Shards: 1, MaxEntriesShard: 2})
+	keys := &KeyBuilder{bufPool: NewByteBufferPool(64)}
+	respPool := NewResponsePool()
+	handler := NewRateLimitHandler(rules, pool, keys, "region", respPool)
+
+	redis.SetHealthy(false)
+	membership.SetHealthy(false)
+	time.Sleep(25 * time.Millisecond)
+	degrade.Update(context.Background())
+
+	resp, err := handler.CheckLimit(context.Background(), &CheckLimitRequest{
+		TenantID: "tenant",
+		Resource: "resource",
+		UserID:   "user",
+		Cost:     1,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.ErrorCode != "" {
+		t.Fatalf("unexpected error code: %#v", resp)
+	}
+	handler.ReleaseResponse(resp)
+}
+
+func newTestHandler(rules *RuleCache) *RateLimitHandler {
+	redis := NewInMemoryRedis(nil)
+	membership := NewStaticMembership("self", []string{"self"})
+	degrade := NewDegradeController(redis, membership, DegradeThresholds{})
+	fallback := &FallbackLimiter{
+		ownership: &RendezvousOwnership{m: membership},
+		policy:    normalizeFallbackPolicy(FallbackPolicy{}),
+		mode:      degrade,
+		local:     &LocalLimiterStore{},
+	}
+	factory := &LimiterFactory{redis: redis, fallback: fallback, mode: degrade}
+	pool := NewLimiterPool(rules, factory, LimiterPolicy{Shards: 1, MaxEntriesShard: 4})
+	keys := &KeyBuilder{bufPool: NewByteBufferPool(64)}
+	respPool := NewResponsePool()
+	return NewRateLimitHandler(rules, pool, keys, "region", respPool)
 }

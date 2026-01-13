@@ -31,8 +31,24 @@ func NewApplication(cfg *Config) (*Application, error) {
 	if cfg.Region == "" {
 		return nil, errors.New("region is required")
 	}
+	redis := cfg.Redis
+	if redis == nil {
+		redis = NewInMemoryRedis(nil)
+	}
+	membership := cfg.Membership
+	if membership == nil {
+		membership = NewStaticMembership("local", []string{"local"})
+	}
 	rules := NewRuleCache()
-	factory := &LimiterFactory{}
+	degrade := NewDegradeController(redis, membership, cfg.DegradeThresh)
+	ownership := &RendezvousOwnership{m: membership}
+	fallback := &FallbackLimiter{
+		ownership: ownership,
+		policy:    normalizeFallbackPolicy(cfg.FallbackPolicy),
+		mode:      degrade,
+		local:     &LocalLimiterStore{},
+	}
+	factory := &LimiterFactory{redis: redis, fallback: fallback, mode: degrade}
 	pool := NewLimiterPool(rules, factory, cfg.LimiterPolicy)
 	keys := &KeyBuilder{bufPool: NewByteBufferPool(4096)}
 	respPool := NewResponsePool()
@@ -51,6 +67,8 @@ func NewApplication(cfg *Config) (*Application, error) {
 		LimiterPool:      pool,
 		KeyBuilder:       keys,
 		RateLimitHandler: rate,
+		DegradeControl:   degrade,
+		FallbackLimiter:  fallback,
 	}, nil
 }
 
@@ -63,12 +81,6 @@ func (app *Application) Start(ctx context.Context) error {
 func (app *Application) Shutdown(ctx context.Context) error {
 	return nil
 }
-
-// DegradeController is a placeholder for degradation logic.
-type DegradeController struct{}
-
-// FallbackLimiter is a placeholder for fallback limiting.
-type FallbackLimiter struct{}
 
 // AdminHandler is a placeholder for admin transport wiring.
 type AdminHandler struct{}
@@ -85,15 +97,6 @@ type CacheSyncWorker struct{}
 // HealthLoop is a placeholder for health reporting.
 type HealthLoop struct{}
 
-// FallbackPolicy is a placeholder policy interface. TODO: define behavior.
-type FallbackPolicy interface{}
-
-// DegradeThresholds is a placeholder for degradation thresholds.
-type DegradeThresholds struct{}
-
-// RedisClient is a placeholder interface. TODO: define behavior.
-type RedisClient interface{}
-
 // RuleDB is a placeholder interface. TODO: define behavior.
 type RuleDB interface{}
 
@@ -102,9 +105,6 @@ type Outbox interface{}
 
 // PubSub is a placeholder interface. TODO: define behavior.
 type PubSub interface{}
-
-// Membership is a placeholder interface. TODO: define behavior.
-type Membership interface{}
 
 // Tracer is a placeholder interface. TODO: define behavior.
 type Tracer interface{}
