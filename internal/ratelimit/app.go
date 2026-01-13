@@ -35,7 +35,14 @@ func NewApplication(cfg *Config) (*Application, error) {
 	factory := &LimiterFactory{}
 	pool := NewLimiterPool(rules, factory, cfg.LimiterPolicy)
 	keys := &KeyBuilder{bufPool: NewByteBufferPool(4096)}
-	rate := NewRateLimitHandler(rules, pool, keys, cfg.Region, NewResponsePool())
+	respPool := NewResponsePool()
+	bp := &BatchPlanner{
+		indexPool: NewIndexPool(),
+		keyPool:   NewKeyPool(),
+		costPool:  NewCostPool(),
+	}
+	rate := NewRateLimitHandler(rules, pool, keys, cfg.Region, respPool)
+	rate.batch = bp
 
 	return &Application{
 		Config:           cfg,
