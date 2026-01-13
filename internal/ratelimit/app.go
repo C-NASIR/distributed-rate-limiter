@@ -34,12 +34,16 @@ func NewApplication(cfg *Config) (*Application, error) {
 	rules := NewRuleCache()
 	factory := &LimiterFactory{}
 	pool := NewLimiterPool(rules, factory, cfg.LimiterPolicy)
+	keys := &KeyBuilder{bufPool: NewByteBufferPool(4096)}
+	rate := NewRateLimitHandler(rules, pool, keys, cfg.Region, NewResponsePool())
 
 	return &Application{
-		Config:         cfg,
-		RuleCache:      rules,
-		LimiterFactory: factory,
-		LimiterPool:    pool,
+		Config:           cfg,
+		RuleCache:        rules,
+		LimiterFactory:   factory,
+		LimiterPool:      pool,
+		KeyBuilder:       keys,
+		RateLimitHandler: rate,
 	}, nil
 }
 
@@ -53,17 +57,11 @@ func (app *Application) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// KeyBuilder is a placeholder for key construction.
-type KeyBuilder struct{}
-
 // DegradeController is a placeholder for degradation logic.
 type DegradeController struct{}
 
 // FallbackLimiter is a placeholder for fallback limiting.
 type FallbackLimiter struct{}
-
-// RateLimitHandler is a placeholder for rate limit transport wiring.
-type RateLimitHandler struct{}
 
 // AdminHandler is a placeholder for admin transport wiring.
 type AdminHandler struct{}
