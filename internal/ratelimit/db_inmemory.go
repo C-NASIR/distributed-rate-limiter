@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -39,10 +38,13 @@ func NewInMemoryRuleDB(now func() time.Time) *InMemoryRuleDB {
 // Create inserts a rule with idempotency enforcement.
 func (db *InMemoryRuleDB) Create(ctx context.Context, req *CreateRuleRequest) (*Rule, error) {
 	if req == nil {
-		return nil, errors.New("create request is required")
+		return nil, ErrInvalidInput
 	}
 	if req.TenantID == "" || req.Resource == "" {
-		return nil, errors.New("tenant and resource are required")
+		return nil, ErrInvalidInput
+	}
+	if req.Limit <= 0 {
+		return nil, ErrInvalidInput
 	}
 	key := ruleKey(req.TenantID, req.Resource)
 	payloadHash := hashCreatePayload(req)
@@ -53,18 +55,18 @@ func (db *InMemoryRuleDB) Create(ctx context.Context, req *CreateRuleRequest) (*
 	if req.IdempotencyKey != "" {
 		if record, ok := db.idempotency[req.IdempotencyKey]; ok {
 			if record.payloadHash != payloadHash {
-				return nil, errors.New("idempotency key reused with different payload")
+				return nil, ErrConflict
 			}
 			rule := db.rules[record.ruleKey]
 			if rule == nil {
-				return nil, errors.New("idempotency key refers to missing rule")
+				return nil, ErrConflict
 			}
 			return cloneRule(rule), nil
 		}
 	}
 
 	if _, ok := db.rules[key]; ok {
-		return nil, errors.New("rule already exists")
+		return nil, ErrConflict
 	}
 
 	rule := &Rule{
@@ -89,10 +91,13 @@ func (db *InMemoryRuleDB) Create(ctx context.Context, req *CreateRuleRequest) (*
 // Update modifies a rule with optimistic concurrency control.
 func (db *InMemoryRuleDB) Update(ctx context.Context, req *UpdateRuleRequest) (*Rule, error) {
 	if req == nil {
-		return nil, errors.New("update request is required")
+		return nil, ErrInvalidInput
 	}
 	if req.TenantID == "" || req.Resource == "" {
-		return nil, errors.New("tenant and resource are required")
+		return nil, ErrInvalidInput
+	}
+	if req.Limit <= 0 {
+		return nil, ErrInvalidInput
 	}
 	key := ruleKey(req.TenantID, req.Resource)
 
@@ -101,10 +106,10 @@ func (db *InMemoryRuleDB) Update(ctx context.Context, req *UpdateRuleRequest) (*
 
 	existing := db.rules[key]
 	if existing == nil {
-		return nil, errors.New("rule not found")
+		return nil, ErrNotFound
 	}
 	if existing.Version != req.ExpectedVersion {
-		return nil, errors.New("version mismatch")
+		return nil, ErrConflict
 	}
 
 	rule := &Rule{
@@ -125,7 +130,7 @@ func (db *InMemoryRuleDB) Update(ctx context.Context, req *UpdateRuleRequest) (*
 // Delete removes a rule if the version matches.
 func (db *InMemoryRuleDB) Delete(ctx context.Context, tenantID, resource string, expectedVersion int64) error {
 	if tenantID == "" || resource == "" {
-		return errors.New("tenant and resource are required")
+		return ErrInvalidInput
 	}
 	key := ruleKey(tenantID, resource)
 
@@ -134,10 +139,10 @@ func (db *InMemoryRuleDB) Delete(ctx context.Context, tenantID, resource string,
 
 	rule := db.rules[key]
 	if rule == nil {
-		return errors.New("rule not found")
+		return ErrNotFound
 	}
 	if rule.Version != expectedVersion {
-		return errors.New("version mismatch")
+		return ErrConflict
 	}
 	delete(db.rules, key)
 	return nil
@@ -146,7 +151,7 @@ func (db *InMemoryRuleDB) Delete(ctx context.Context, tenantID, resource string,
 // Get returns a rule by tenant/resource.
 func (db *InMemoryRuleDB) Get(ctx context.Context, tenantID, resource string) (*Rule, error) {
 	if tenantID == "" || resource == "" {
-		return nil, errors.New("tenant and resource are required")
+		return nil, ErrInvalidInput
 	}
 	key := ruleKey(tenantID, resource)
 
@@ -155,7 +160,7 @@ func (db *InMemoryRuleDB) Get(ctx context.Context, tenantID, resource string) (*
 
 	rule := db.rules[key]
 	if rule == nil {
-		return nil, errors.New("rule not found")
+		return nil, ErrNotFound
 	}
 	return cloneRule(rule), nil
 }
@@ -163,7 +168,7 @@ func (db *InMemoryRuleDB) Get(ctx context.Context, tenantID, resource string) (*
 // List returns all rules for a tenant.
 func (db *InMemoryRuleDB) List(ctx context.Context, tenantID string) ([]*Rule, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant is required")
+		return nil, ErrInvalidInput
 	}
 
 	db.mu.Lock()

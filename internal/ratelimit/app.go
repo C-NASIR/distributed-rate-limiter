@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 )
 
 // Application holds core components for the service.
@@ -22,6 +23,9 @@ type Application struct {
 	CacheInvalidator *CacheInvalidator
 	CacheSyncWorker  *CacheSyncWorker
 	HealthLoop       *HealthLoop
+	ready            atomic.Bool
+	httpTransport    *HTTPTransport
+	transports       []Transport
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
 }
@@ -86,7 +90,7 @@ func NewApplication(cfg *Config) (*Application, error) {
 	syncer := &CacheSyncWorker{db: cfg.RuleDB, rules: rules, interval: cfg.CacheSyncInterval}
 	health := &HealthLoop{degrade: degrade, interval: cfg.HealthInterval}
 
-	return &Application{
+	app := &Application{
 		Config:           cfg,
 		RuleCache:        rules,
 		LimiterFactory:   factory,
@@ -100,7 +104,21 @@ func NewApplication(cfg *Config) (*Application, error) {
 		CacheInvalidator: invalid,
 		CacheSyncWorker:  syncer,
 		HealthLoop:       health,
-	}, nil
+	}
+
+	if cfg.EnableHTTP {
+		transport := NewHTTPTransport(cfg.HTTPListenAddr, app.Ready)
+		if err := transport.ServeRateLimit(app.RateLimitHandler); err != nil {
+			return nil, err
+		}
+		if err := transport.ServeAdmin(app.AdminHandler); err != nil {
+			return nil, err
+		}
+		app.httpTransport = transport
+		app.transports = append(app.transports, transport)
+	}
+
+	return app, nil
 }
 
 // Start begins background work for the application.
@@ -152,6 +170,15 @@ func (app *Application) Start(ctx context.Context) error {
 			_ = app.HealthLoop.Start(ctx)
 		}()
 	}
+	if app.httpTransport != nil {
+		app.wg.Add(1)
+		go func() {
+			defer app.wg.Done()
+			_ = app.httpTransport.Start()
+		}()
+	}
+
+	app.ready.Store(true)
 
 	return nil
 }
@@ -167,6 +194,13 @@ func (app *Application) Shutdown(ctx context.Context) error {
 	if app.cancel != nil {
 		app.cancel()
 	}
+	app.ready.Store(false)
+	for _, transport := range app.transports {
+		if transport == nil {
+			continue
+		}
+		_ = transport.Shutdown(ctx)
+	}
 	done := make(chan struct{})
 	go func() {
 		app.wg.Wait()
@@ -178,4 +212,12 @@ func (app *Application) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// Ready reports whether the application has completed startup.
+func (app *Application) Ready() bool {
+	if app == nil {
+		return false
+	}
+	return app.ready.Load()
 }

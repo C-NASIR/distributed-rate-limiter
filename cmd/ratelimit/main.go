@@ -16,7 +16,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg := &ratelimit.Config{Region: "local"}
+	cfg := &ratelimit.Config{
+		Region:         "local",
+		EnableHTTP:     true,
+		HTTPListenAddr: ":8080",
+	}
 	app, err := ratelimit.NewApplication(cfg)
 	if err != nil {
 		log.Fatalf("failed to create application: %v", err)

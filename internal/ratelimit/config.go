@@ -12,6 +12,8 @@ type Config struct {
 	PubSub            PubSub
 	Membership        Membership
 	Channel           string
+	HTTPListenAddr    string
+	EnableHTTP        bool
 	CacheSyncInterval time.Duration
 	HealthInterval    time.Duration
 	LimiterPolicy     LimiterPolicy

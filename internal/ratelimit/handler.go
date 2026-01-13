@@ -31,13 +31,19 @@ func NewRateLimitHandler(rules *RuleCache, pool *LimiterPool, keys *KeyBuilder, 
 // CheckLimit evaluates a rate limit request.
 func (h *RateLimitHandler) CheckLimit(ctx context.Context, req *CheckLimitRequest) (*CheckLimitResponse, error) {
 	if req == nil {
-		return nil, errors.New("request is required")
+		return nil, ErrInvalidInput
 	}
 	if req.TenantID == "" {
-		return nil, errors.New("tenant id is required")
+		return nil, ErrInvalidInput
 	}
 	if req.Resource == "" {
-		return nil, errors.New("resource is required")
+		return nil, ErrInvalidInput
+	}
+	if req.UserID == "" {
+		return nil, ErrInvalidInput
+	}
+	if req.Cost <= 0 {
+		return nil, ErrInvalidInput
 	}
 	if h == nil || h.rules == nil || h.pool == nil || h.keys == nil || h.respPool == nil {
 		return nil, errors.New("handler is not initialized")
