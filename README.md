@@ -1,4 +1,4 @@
-# Ratelimit
+# Ratelimit (🏗️ PROJECT IS 90% DONE, BUT STILL IN PROGRESS)
 
 A distributed rate limiting service that you can run as a standalone binary and integrate with any system through HTTP or gRPC.
 
@@ -102,6 +102,19 @@ go run ./cmd/ratelimit
 docker build -t ratelimit .
 docker run -p 8080:8080 -p 9090:9090 ratelimit
 ```
+
+## Local integration
+
+```sh
+docker compose up --build
+docker compose down
+scripts/dev/reset_local.sh
+```
+
+This is a local dev and demo setup.
+It runs real Redis and Postgres containers.
+The application may still use in memory backends until real adapters are implemented.
+The env vars exist to support future adapters.
 
 ---
 

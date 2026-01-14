@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+  ratelimit:
+    build: .
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    depends_on:
+      - redis
+      - postgres
+    environment:
+      RATELIMIT_REGION: local
+      RATELIMIT_ENABLE_HTTP: "true"
+      RATELIMIT_HTTP_ADDR: ":8080"
+      RATELIMIT_ENABLE_GRPC: "true"
+      RATELIMIT_GRPC_ADDR: ":9090"
+      RATELIMIT_TRACE_SAMPLE_RATE: "100"
+      RATELIMIT_ENABLE_AUTH: "false"
+      RATELIMIT_ADMIN_TOKEN: ""
+      RATELIMIT_REDIS_ADDR: "redis:6379"
+      RATELIMIT_POSTGRES_DSN: "postgres://ratelimit:ratelimit@postgres:5432/ratelimit?sslmode=disable"
+      RATELIMIT_PUBSUB_KIND: "postgres"
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ratelimit
+      POSTGRES_PASSWORD: ratelimit
+      POSTGRES_DB: ratelimit
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ratelimit -d ratelimit"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+volumes:
+  postgres_data:
