@@ -1,4 +1,4 @@
-# Ratelimit (🏗️ PROJECT IS 90% DONE, BUT STILL IN PROGRESS)
+# Ratelimit (🏗️ PROJECT IS 80% DONE, BUT STILL IN PROGRESS)
 
 A distributed rate limiting service that you can run as a standalone binary and integrate with any system through HTTP or gRPC.
 
