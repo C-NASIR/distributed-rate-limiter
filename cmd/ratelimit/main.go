@@ -9,7 +9,8 @@ import (
 	"syscall"
 	"time"
 
-	"ratelimit/internal/ratelimit"
+	"ratelimit/internal/ratelimit/app"
+	"ratelimit/internal/ratelimit/config"
 )
 
 func main() {
@@ -29,13 +30,13 @@ func main() {
 		return
 	}
 
-	cfg, err := ratelimit.LoadConfig(ratelimit.LoadOptions{Args: args})
+	cfg, err := config.LoadConfig(config.LoadOptions{Args: args})
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
 	if command == "print_config" {
-		if err := ratelimit.PrintConfig(os.Stdout, cfg); err != nil {
+		if err := config.PrintConfig(os.Stdout, cfg); err != nil {
 			log.Fatalf("failed to print config: %v", err)
 		}
 		return
@@ -44,7 +45,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	app, err := ratelimit.NewApplication(cfg)
+	app, err := app.NewApplication(cfg)
 	if err != nil {
 		log.Fatalf("failed to create application: %v", err)
 	}
