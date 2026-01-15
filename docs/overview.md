@@ -34,7 +34,7 @@ Think of it like an airport: planes landing and taking off every minute (hot pat
 
 - Lives in each region
 - Remembers: "User Alice from Tenant Acme has made 47 requests in the last minute"
-- Updates these numbers **atomically** using Lua scripts
+- Updates these numbers **atomically** using Lua scripts (or an in-memory implementation in this repo)
 
 **The Rules** (the law of the land)
 
@@ -228,9 +228,9 @@ flowchart LR
 
 **PostgreSQL** (the source of truth)
 
-- **Primary database** in one region (say, US-East)
-- **Read replicas** in every region
-- Stores all rules with version numbers
+- **Primary database** in one region (say, US-East) when backed by Postgres
+- **Read replicas** in every region when Postgres is used
+- Stores all rules with version numbers (default implementation is in-memory for portability)
 
 **The Outbox**
 
@@ -240,12 +240,12 @@ flowchart LR
 **Redis Pub/Sub**
 
 - A fast message bus
-- Broadcasts invalidation events to all instances in all regions
+- Broadcasts invalidation events to all instances in all regions (in-memory by default)
 
 **The Rule Cache**
 
 - Needs to stay in sync with the database
-- Updated via two mechanisms: fast (invalidation) and slow (full sync)
+- Updated via three mechanisms: immediate local writes on admin requests, fast invalidation, and slow full sync
 
 ---
 
@@ -277,48 +277,48 @@ RETURNING *;
 If `version` doesn't match (someone else updated it), the transaction fails. If it succeeds:
 
 - The rule is now version 8
-- **In the same transaction**, a row is inserted into the **outbox table**:
+- A row is inserted into the **outbox table** (in this repo it's a separate write; in production you'd wrap both in one transaction):
 
 ```sql
 INSERT INTO outbox (id, channel, payload)
-VALUES (uuid(), 'rule_changes', '{"tenant":"acme","resource":"/api/search","action":"upsert","version":8}');
+VALUES (uuid(), 'ratelimit_invalidation', '{"tenant_id":"acme","resource":"/api/search","action":"upsert","version":8}');
 ```
 
 **Why the outbox?** If the database commits but the app crashes before publishing to Redis Pub/Sub, we need a durable record to retry later.
 
 **Input**: Update request  
 **Output**: Updated rule (version 8), outbox row created  
-**Who it talks to**: PostgreSQL primary
+**Who it talks to**: PostgreSQL primary (or in-memory rule DB)
 
 ---
 
 **Step 2: The Outbox Publisher Wakes Up**
 
-Every 100ms, the **OutboxPublisher** runs:
+Every ~50ms by default (configurable), the **OutboxPublisher** runs:
 
 1. "Are there any unsent messages in the outbox?"
 2. Fetches up to 100 rows
-3. For each row, publishes to **PubSub.Publish()** on channel `rule_changes`
+3. For each row, publishes to **PubSub.Publish()** on channel `ratelimit_invalidation` (configurable)
 4. Marks the row as sent
 
 **Input**: Polling timer  
 **Output**: Messages published to Redis Pub/Sub  
 **Who it talks to**:
 
-- Outbox table (Postgres)
-- Redis Pub/Sub
+- Outbox table (Postgres) or in-memory outbox
+- Redis Pub/Sub or in-memory pubsub
 
 ---
 
 **Step 3: Instances Receive the Invalidation**
 
-Every instance in every region is subscribed to the `rule_changes` channel via **CacheInvalidator.Subscribe()**.
+Every instance in every region is subscribed to the `ratelimit_invalidation` channel via **CacheInvalidator.Subscribe()**.
 
 When the message arrives:
 
 ```json
 {
-  "tenant": "acme",
+  "tenant_id": "acme",
   "resource": "/api/search",
   "action": "upsert",
   "version": 8
@@ -328,7 +328,7 @@ When the message arrives:
 The **CacheInvalidator** springs into action:
 
 1. "This is an upsert event. Let me fetch the latest rule."
-2. Calls **RuleDB.Get()** to the **local read replica**
+2. Calls **RuleDB.Get()** to the **local read replica** (or in-memory store in this repo)
 3. Receives the updated rule (version 8, limit 500)
 4. Calls **RuleCache.UpsertIfNewer()**: "Only update if version > current"
 5. The RuleCache compares: "I have version 7, this is version 8" → Updates in memory
@@ -341,7 +341,7 @@ The **CacheInvalidator** springs into action:
 **Output**: RuleCache updated, limiter cutover initiated  
 **Who it talks to**:
 
-- RuleDB (read replica)
+- RuleDB (read replica or in-memory)
 - RuleCache (in-memory)
 - LimiterPool (in-memory)
 
@@ -418,9 +418,9 @@ What if:
 - The read replica is lagging and returns stale data?
 - An instance was down when the message was published?
 
-Every 10 seconds, **CacheSyncWorker** runs on every instance:
+Every 200ms by default (configurable), **CacheSyncWorker** runs on every instance:
 
-1. Calls **RuleDB.LoadAll()** on the local read replica
+1. Calls **RuleDB.LoadAll()** on the local read replica (or in-memory)
 2. "Give me all rules in the database"
 3. Calls **RuleCache.ReplaceAll()**
 4. The RuleCache does a smart update:
@@ -432,7 +432,7 @@ Every 10 seconds, **CacheSyncWorker** runs on every instance:
 
 **Input**: Timer (every 10 seconds)  
 **Output**: Entire RuleCache refreshed  
-**Who it talks to**: RuleDB (read replica)
+**Who it talks to**: RuleDB (read replica or in-memory)
 
 ---
 
@@ -440,7 +440,7 @@ Every 10 seconds, **CacheSyncWorker** runs on every instance:
 
 ### DegradeController - The Circuit Breaker
 
-Runs every second in the **HealthLoop**:
+Runs every 100ms by default (configurable) in the **HealthLoop**:
 
 1. Checks: "Is Redis healthy?" (calls `RedisClient.Healthy()`)
 2. Checks: "Is the membership service healthy?" (calls `Membership.Healthy()`)
@@ -506,7 +506,7 @@ Client → Transport (HTTP/gRPC)
        → RateLimitHandler
        → RuleCache (memory lookup) → finds Rule
        → LimiterPool (get or create limiter)
-       → Limiter → RedisClient → Redis Lua script
+       → Limiter → RedisClient → Redis Lua script (or in-memory Redis)
        → Decision (allowed/denied)
        → Response (pooled) → Transport → Client
 ```
@@ -520,22 +520,22 @@ Client → Transport (HTTP/gRPC)
 ```
 Operator → Transport → AdminHandler
         → RuleDB.Update() → Postgres Primary
-        → Outbox row inserted (same transaction)
+        → Outbox row inserted (separate write in this repo)
 
-OutboxPublisher (100ms loop) → fetches outbox rows
-                             → PubSub.Publish() → Redis Pub/Sub
+OutboxPublisher (~50ms loop) → fetches outbox rows
+                             → PubSub.Publish() → Redis Pub/Sub (or in-memory)
 
 All instances → CacheInvalidator.Subscribe()
              → receives event
-             → RuleDB.Get() → Read Replica
+             → RuleDB.Get() → Read Replica (or in-memory)
              → RuleCache.UpsertIfNewer()
              → LimiterPool.Cutover()
 
-CacheSyncWorker (10s loop) → RuleDB.LoadAll() → Read Replica
+CacheSyncWorker (200ms loop) → RuleDB.LoadAll() → Read Replica (or in-memory)
                            → RuleCache.ReplaceAll()
 ```
 
-**Consistency**: Eventually consistent (< 10 seconds guaranteed, usually < 100ms via invalidation)
+**Consistency**: Eventually consistent (< 200ms guaranteed by default, usually faster via invalidation)
 
 ---
 
