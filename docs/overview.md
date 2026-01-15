@@ -180,6 +180,36 @@ The **FallbackLimiter** is like an emergency backup generator:
 - Membership (to get list of instances)
 - LocalLimiterStore (in-memory token buckets per key)
 
+```mermaid
+flowchart LR
+  Client[Client Service]
+  Transport["Transport (HTTP/gRPC)"]
+  Handler[RateLimitHandler]
+  RuleCache[RuleCache]
+  LimiterPool[LimiterPool]
+  LimiterFactory[LimiterFactory]
+  TokenBucketLimiter[TokenBucketLimiter]
+  RedisClient[RedisClient]
+  Redis[(Redis)]
+  ResponsePool[ResponsePool]
+
+  Client -->|CheckLimit request| Transport
+  Transport -->|CheckLimit| Handler
+  Handler -->|Lookup rule| RuleCache
+  Handler -->|Acquire limiter| LimiterPool
+  LimiterPool -->|Uses rule| RuleCache
+  LimiterPool -->|Create limiter| LimiterFactory
+  LimiterFactory -->|Builds| TokenBucketLimiter
+  TokenBucketLimiter -->|ExecTokenBucket| RedisClient
+  RedisClient --> Redis
+  Redis --> RedisClient
+  RedisClient --> TokenBucketLimiter
+  TokenBucketLimiter -->|Decision| Handler
+  Handler -->|Get response| ResponsePool
+  Handler -->|CheckLimitResponse| Transport
+  Transport -->|Allowed| Client
+```
+
 ---
 
 ## Act 2: The Control Plane - "I Need to Change a Rule"
@@ -355,6 +385,28 @@ The handler asks the **LimiterPool** for a limiter. The pool:
 4. Caches it for future requests
 
 **The first request with the new limiter goes to Redis and the Lua script now uses limit=500.**
+
+```mermaid
+flowchart LR
+  Operator[Operator]
+  AdminService[Admin Service]
+  RuleDB[(PostgreSQL)]
+  Outbox[(Outbox Table)]
+  Publisher[Outbox Publisher]
+  PubSub[(Redis Pub/Sub)]
+  RuleSubscriber[Rule Subscriber]
+  RuleCache[RuleCache]
+  LimiterPool[LimiterPool]
+
+  Operator -->|Create/Update rule| AdminService
+  AdminService -->|Write rule| RuleDB
+  AdminService -->|Enqueue event| Outbox
+  Outbox -->|Poll events| Publisher
+  Publisher -->|Publish rule update| PubSub
+  PubSub -->|Rule update event| RuleSubscriber
+  RuleSubscriber -->|UpsertIfNewer| RuleCache
+  RuleSubscriber -->|Cutover| LimiterPool
+```
 
 ---
 
