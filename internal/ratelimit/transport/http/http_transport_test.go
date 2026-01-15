@@ -246,7 +246,12 @@ func newHTTPTestServer(t *testing.T, appInstance *app.Application) *httptest.Ser
 		t.Fatalf("failed to register admin service: %v", err)
 	}
 	transport.Configure(httptransport.HTTPTransportConfig{
-		Metrics: observability.NewInMemoryMetrics(),
+		Metrics: func() *observability.InMemoryMetrics {
+			if metrics, ok := appInstance.Config.Metrics.(*observability.InMemoryMetrics); ok {
+				return metrics
+			}
+			return observability.NewInMemoryMetrics()
+		}(),
 		Mode:    appInstance.Mode,
 		Region:  appInstance.Config.Region,
 	})

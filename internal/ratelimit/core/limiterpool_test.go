@@ -12,7 +12,7 @@ func TestLimiterPool_AcquireAndRelease_RefCounting(t *testing.T) {
 	t.Parallel()
 
 	rules := core.NewRuleCache()
-	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant-a", Resource: "resource-1", Limit: 10, Version: 1}})
+	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant-a", Resource: "resource-1", Algorithm: "token_bucket", Limit: 10, Version: 1}})
 
 	pool := newTestLimiterPool(rules, core.LimiterPolicy{
 		Shards:          1,
@@ -55,7 +55,7 @@ func TestLimiterPool_Cutover_ForcesNewLimiter(t *testing.T) {
 	t.Parallel()
 
 	rules := core.NewRuleCache()
-	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant-a", Resource: "resource-1", Limit: 10, Version: 1}})
+	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant-a", Resource: "resource-1", Algorithm: "token_bucket", Limit: 10, Version: 1}})
 
 	pool := newTestLimiterPool(rules, core.LimiterPolicy{
 		Shards:          1,
@@ -75,7 +75,7 @@ func TestLimiterPool_Cutover_ForcesNewLimiter(t *testing.T) {
 	defer cancel()
 	pool.Cutover(ctx, "tenant-a", "resource-1", 2)
 
-	rules.UpsertIfNewer(&core.Rule{TenantID: "tenant-a", Resource: "resource-1", Limit: 10, Version: 2})
+	rules.UpsertIfNewer(&core.Rule{TenantID: "tenant-a", Resource: "resource-1", Algorithm: "token_bucket", Limit: 10, Version: 2})
 
 	handle2, _, err := pool.Acquire(context.Background(), "tenant-a", "resource-1")
 	if err != nil {
@@ -95,7 +95,7 @@ func TestLimiterPool_QuiescingEntryNotHandedOut(t *testing.T) {
 	t.Parallel()
 
 	rules := core.NewRuleCache()
-	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant-a", Resource: "resource-1", Limit: 10, Version: 1}})
+	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant-a", Resource: "resource-1", Algorithm: "token_bucket", Limit: 10, Version: 1}})
 
 	pool := newTestLimiterPool(rules, core.LimiterPolicy{
 		Shards:          1,
@@ -130,9 +130,9 @@ func TestLimiterPool_LRUEviction_RemovesOld(t *testing.T) {
 
 	rules := core.NewRuleCache()
 	rules.ReplaceAll([]*core.Rule{
-		{TenantID: "tenant-a", Resource: "resource-1", Limit: 10, Version: 1},
-		{TenantID: "tenant-a", Resource: "resource-2", Limit: 10, Version: 1},
-		{TenantID: "tenant-a", Resource: "resource-3", Limit: 10, Version: 1},
+		{TenantID: "tenant-a", Resource: "resource-1", Algorithm: "token_bucket", Limit: 10, Version: 1},
+		{TenantID: "tenant-a", Resource: "resource-2", Algorithm: "token_bucket", Limit: 10, Version: 1},
+		{TenantID: "tenant-a", Resource: "resource-3", Algorithm: "token_bucket", Limit: 10, Version: 1},
 	})
 
 	pool := newTestLimiterPool(rules, core.LimiterPolicy{

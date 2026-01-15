@@ -76,7 +76,7 @@ func TestRateLimitHandler_Success(t *testing.T) {
 	t.Parallel()
 
 	rules := core.NewRuleCache()
-	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant", Resource: "resource", Limit: 10, Version: 1}})
+	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant", Resource: "resource", Algorithm: "token_bucket", Limit: 10, Version: 1}})
 	handler := newTestHandler(rules)
 
 	resp, err := handler.CheckLimit(context.Background(), &core.CheckLimitRequest{
@@ -139,8 +139,8 @@ func TestRateLimitHandler_CheckLimitBatch_PreservesOrder(t *testing.T) {
 
 	rules := core.NewRuleCache()
 	rules.ReplaceAll([]*core.Rule{
-		{TenantID: "tenant-a", Resource: "resource-1", Limit: 10, Version: 1},
-		{TenantID: "tenant-b", Resource: "resource-2", Limit: 5, Version: 1},
+		{TenantID: "tenant-a", Resource: "resource-1", Algorithm: "token_bucket", Limit: 10, Version: 1},
+		{TenantID: "tenant-b", Resource: "resource-2", Algorithm: "token_bucket", Limit: 5, Version: 1},
 	})
 	handler := newTestHandler(rules)
 
@@ -173,7 +173,7 @@ func TestRateLimitHandler_CheckLimitBatch_PerItemValidation(t *testing.T) {
 	t.Parallel()
 
 	rules := core.NewRuleCache()
-	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant", Resource: "resource", Limit: 10, Version: 1}})
+	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant", Resource: "resource", Algorithm: "token_bucket", Limit: 10, Version: 1}})
 	handler := newTestHandler(rules)
 
 	reqs := []*core.CheckLimitRequest{
@@ -206,7 +206,7 @@ func TestRateLimitHandler_CheckLimitBatch_RuleNotFoundPerItem(t *testing.T) {
 	t.Parallel()
 
 	rules := core.NewRuleCache()
-	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant", Resource: "resource", Limit: 10, Version: 1}})
+	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant", Resource: "resource", Algorithm: "token_bucket", Limit: 10, Version: 1}})
 	handler := newTestHandler(rules)
 
 	reqs := []*core.CheckLimitRequest{
@@ -231,7 +231,7 @@ func TestRateLimitHandler_CheckLimitBatch_LimiterUnavailablePerGroup(t *testing.
 	t.Parallel()
 
 	rules := core.NewRuleCache()
-	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant", Resource: "resource", Limit: 10, Version: 1}})
+	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant", Resource: "resource", Algorithm: "token_bucket", Limit: 10, Version: 1}})
 	pool := core.NewLimiterPool(rules, &core.LimiterFactory{}, core.LimiterPolicy{Shards: 1, MaxEntriesShard: 4})
 	keys := core.NewKeyBuilder(core.NewByteBufferPool(64))
 	respPool := core.NewResponsePool()
@@ -264,7 +264,7 @@ func TestRateLimitHandler_CheckLimit_EmergencyMode_UsesFallback(t *testing.T) {
 	t.Parallel()
 
 	rules := core.NewRuleCache()
-	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant", Resource: "resource", Limit: 10, Version: 1}})
+	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant", Resource: "resource", Algorithm: "token_bucket", Limit: 10, Version: 1}})
 	redis := newTestRedis()
 	membership := core.NewSingleInstanceMembership("self", "region")
 	thresholds := core.DegradeThresholds{RedisUnhealthyFor: 10 * time.Millisecond, MembershipUnhealthy: 20 * time.Millisecond}

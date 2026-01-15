@@ -12,7 +12,7 @@ func TestHandler_DrainingRejectsNew(t *testing.T) {
 	t.Parallel()
 
 	rules := core.NewRuleCache()
-	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant", Resource: "resource", Limit: 10, Version: 1}})
+	rules.ReplaceAll([]*core.Rule{{TenantID: "tenant", Resource: "resource", Algorithm: "token_bucket", Limit: 10, Version: 1}})
 	handler := newTestHandler(rules)
 	tracker := core.NewInFlight()
 	handler.SetInFlight(tracker)

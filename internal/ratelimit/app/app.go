@@ -216,6 +216,9 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	if metrics == nil {
 		metrics = appMetrics
 	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = metrics
+	}
 	tracer := cfg.Tracer
 	if tracer == nil {
 		tracer = observability.NoopTracer{}

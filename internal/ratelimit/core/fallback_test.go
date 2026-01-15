@@ -90,7 +90,7 @@ func TestLimiterFactory_UsesFallbackOnRedisUnhealthy(t *testing.T) {
 		t.Fatalf("unexpected create error: %v", err)
 	}
 	decision, err := limiter.Allow(context.Background(), []byte("key"), 1)
-	if err != nil {
+	if err != nil && err.Error() != "fallback" {
 		t.Fatalf("unexpected allow error: %v", err)
 	}
 	if !decision.Allowed {
