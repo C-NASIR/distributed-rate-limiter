@@ -65,7 +65,7 @@ At a high level the system is composed of:
 
 ```sh
 go test ./...
-go test -bench=. ./internal/ratelimit
+go test -bench=. ./internal/ratelimit/...
 ```
 
 ---
@@ -223,7 +223,7 @@ CheckLimitBatch
 Run them with:
 
 ```sh
-go test -bench=. ./internal/ratelimit
+go test -bench=. ./internal/ratelimit/...
 ```
 
 These benchmarks are designed to reflect realistic in process performance characteristics.
